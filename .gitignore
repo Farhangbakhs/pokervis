@@ -1,0 +1,44 @@
+# secrets / keys
+.env
+*.env
+*keypair*.json
+id.json
+chain/devnet.json.bak
+
+# data and models (large, local)
+.venv/
+data/
+models/
+Clubs/
+Diamonds/
+Hearts/
+Spades/
+Queens/
+*.MOV
+*.mp4
+*.pt
+*.pth
+*.onnx
+
+# python / node
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dist/
+target/
+.anchor/
+test-ledger/
+
+# chain service local secrets/state
+chain/service/.keys/
+chain/service/.state/
+
+# downloaded helper binaries
+tools/bin/
+
+# the teammate's own repo, cloned here for reference (web/vendor has the two files we use)
+/AutoPoker/
+
+# misc
+*.tmp

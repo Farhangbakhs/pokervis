@@ -1,0 +1,22 @@
+{
+  "name": "autopoker-chain-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "setup": "tsx --env-file-if-exists=../../.env scripts/setup-devnet.ts",
+    "start": "tsx --env-file-if-exists=../../.env src/server.ts",
+    "test": "tsx --test src/netting.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@solana/spl-token": "0.4.9",
+    "@solana/web3.js": "1.98.0",
+    "fastify": "5.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "tsx": "4.19.2",
+    "typescript": "5.7.3"
+  }
+}

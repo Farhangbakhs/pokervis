@@ -1,0 +1,200 @@
+/* Additions on top of the teammate's pixel style (vendor/style.css, untouched). */
+
+/* ---------- the status bar: what is happening and who must act ---------- */
+.statusbar {
+  background: #1b1630;
+  padding: 16px 18px;
+  text-align: center;
+  box-shadow: 0 -4px 0 0 var(--ink), 0 4px 0 0 var(--ink), -4px 0 0 0 var(--ink), 4px 0 0 0 var(--ink);
+  border-top: 6px solid var(--gold-dark);
+}
+#status-headline {
+  font-family: var(--px);
+  font-size: clamp(11px, 3.2vw, 20px);
+  line-height: 1.5;
+  color: var(--gold);
+  text-shadow: 3px 3px 0 #000;
+}
+#status-detail { margin-top: 8px; font-size: clamp(16px, 3vw, 22px); color: var(--cream); line-height: 1.15; min-height: 1.2em; }
+.statusbar[data-code='turn'] #status-headline { color: var(--teal); }
+.statusbar[data-code='dealer_board'] { background: #3a2b00; }
+.statusbar[data-code='showdown'], .statusbar[data-code='showdown_reading'] { background: #2a1450; }
+.statusbar[data-code='winner'] { background: #0b4a2a; }
+.statusbar[data-code='winner'] #status-headline { color: #7dff9a; animation: blink 0.6s steps(1) 6; }
+.statusbar.mine { background: #0b3b46; animation: blink 1s steps(1) infinite; }
+.statusbar.mine #status-headline { color: #fff; }
+.statusbar.err #status-headline { color: var(--red); }
+
+/* ---------- seats ---------- */
+.seat.me { background: #34406a; }
+.seat.turn { background: #0b3b46; animation: blink 0.9s steps(1) infinite; }
+.seat.folded > :not(.flag) { opacity: 0.4; }
+.seat.empty-seat { background: #1a1630; cursor: default; }
+.seat.empty-seat > :not(.name):not(.bet):not(.qr) { opacity: 0.25; filter: grayscale(1); }
+.seat.empty-seat .name, .seat.empty-seat .bet { color: #6e688f; }
+.seat .hand { display: flex; gap: 2px; justify-content: center; min-height: 0; }
+.seat .hand canvas { width: 30px; height: auto; aspect-ratio: 32 / 44; filter: drop-shadow(2px 2px 0 rgba(0, 0, 0, 0.5)); }
+.seat .hand[hidden] { display: none; }
+.seat .hand canvas.ghost { opacity: 0.25; outline: 2px dashed rgba(255, 255, 255, 0.35); outline-offset: -2px; background: rgba(0, 0, 0, 0.2); }
+.seat .bet.act { color: var(--gold); }
+.seat .bet.win { color: #7dff9a; }
+
+/* ---------- control + join panels ---------- */
+.panel {
+  margin-top: 8px;
+  background: #221d3a;
+  padding: 16px;
+  box-shadow: 0 -4px 0 0 var(--ink), 0 4px 0 0 var(--ink), -4px 0 0 0 var(--ink), 4px 0 0 0 var(--ink);
+}
+.panel[hidden], #raise-box[hidden] { display: none; }
+.panel h2 { font-family: var(--px); font-size: 12px; color: var(--gold); margin: 0 0 12px; }
+.panel input[type='text'], #join-name {
+  width: 100%;
+  font-family: var(--px); font-size: 12px;
+  padding: 10px;
+  background: #0d0b1a; color: var(--gold);
+  border: 0; box-shadow: 0 0 0 3px var(--ink), inset 0 0 0 2px #2e2850;
+}
+#join-name:focus { outline: 3px solid var(--teal); }
+.hint { color: #8a83b0; line-height: 1.1; margin: 10px 0; }
+.wallet-line { font-family: var(--px); font-size: 8px; color: #8a83b0; margin: 8px 0 12px; }
+.wallet-line code { color: var(--teal); }
+.me-line { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.me-line b { font-family: var(--px); font-size: 10px; color: var(--gold); font-weight: normal; }
+#me-avatar { width: 40px; height: 40px; }
+#me-stack { font-family: var(--px); font-size: 8px; color: #cfc8f0; }
+#me-hint { flex: 1 1 160px; text-align: right; font-size: 18px; color: var(--cream); line-height: 1.1; }
+.btn-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 10px; margin: 6px 4px; }
+.btn-row button, .panel > button, #b-sit { min-height: 52px; font-size: 11px; }
+button.go { background: var(--teal); color: var(--ink); }
+button.go:hover { background: #7dffd0; }
+button.wide, #b-sit { width: calc(100% - 8px); margin: 8px 4px 0; }
+button:disabled { opacity: 0.3; cursor: default; background: #555; }
+button:disabled:hover { background: #555; }
+.raise-val { font-family: var(--px); font-size: 10px; color: var(--cream); margin: 12px 4px 6px; }
+.raise-val b { color: var(--gold); font-weight: normal; }
+#raise { width: calc(100% - 8px); margin: 6px 4px; accent-color: var(--gold); }
+.error { color: #ff7b84; font-family: var(--px); font-size: 8px; line-height: 1.6; min-height: 1.4em; margin: 8px 4px; }
+#b-leave { margin: 10px 4px 0; font-size: 8px; min-height: 40px; }
+
+@media (max-width: 640px) {
+  .seat .hand canvas { width: 24px; }
+  .statusbar { padding: 12px 10px; }
+  #controls { position: sticky; bottom: 8px; z-index: 5; }
+}
+
+
+/* ---------- modes: phones hide the board (the real cards are on the table); the dealer screen shows it ---------- */
+.is-player .felt { display: none; }
+#dealer-login { max-width: 360px; margin: 8vh auto; }
+#dealer-login[hidden] { display: none; }
+.btn { display: inline-block; font-family: var(--px); font-size: 9px; padding: 10px 12px; background: var(--gold); color: var(--ink); text-decoration: none; margin-top: 8px;
+  box-shadow: 0 -4px 0 0 var(--ink), 0 4px 0 0 var(--ink), -4px 0 0 0 var(--ink), 4px 0 0 0 var(--ink); }
+
+/* seat QR on the dealer screen */
+.seat .qr { width: 64px; height: 64px; background: #fff; padding: 3px; image-rendering: pixelated; }
+.seat .qr[hidden] { display: none; }
+.mode-dealer .seat.empty-seat { width: 124px; }
+.mode-dealer .seat.empty-seat .bet { color: var(--teal); }
+
+/* dealer tools drawer */
+#dealer-tools > summary { font-family: var(--px); font-size: 10px; color: var(--gold); cursor: pointer; padding: 4px 0; }
+.tools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 12px; }
+.tools-grid h3 { font-family: var(--px); font-size: 8px; color: var(--teal); margin: 12px 0 8px; font-weight: normal; }
+.tools-grid img { width: 100%; background: #000; }
+.tools-grid input[type='text'] { width: 100%; margin: 4px 0; font-family: var(--px); font-size: 9px; padding: 8px; background: #0d0b1a; color: var(--gold); border: 0; box-shadow: 0 0 0 3px var(--ink), inset 0 0 0 2px #2e2850; }
+#cam-reads { font-size: 16px; }
+
+
+/* ============ layout: board in the middle of the table, small pot, everything fits one screen ============ */
+.pot { position: relative; }
+#banner { z-index: 30; }
+header { margin-bottom: 10px; }
+main { gap: 14px; }
+#info-pill { font-size: 8px; }
+#info-pill b { color: var(--gold); }
+#blinds { color: #cfc8f0; }
+
+/* slimmer status bar */
+.statusbar { padding: 10px 14px; }
+#status-headline { font-size: clamp(10px, 2.2vw, 16px); }
+#status-detail { margin-top: 4px; font-size: clamp(15px, 2.4vw, 19px); }
+
+/* the oval is sized from the screen height as well as its width, so the whole table fits without scrolling */
+.pot { padding: 8px 12px 6px; }
+.table-wrap { padding: 84px 84px 92px; }
+.oval { width: min(100%, calc((100vh - 400px) * 2.2)); min-width: 420px; margin: 0 auto; }
+
+.oval-board {
+  position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%);
+  display: flex; gap: clamp(3px, 0.7vw, 7px); z-index: 1;
+}
+.oval-board .slot { width: clamp(26px, 4.8vw, 50px); gap: 3px; }
+.oval-board .slot canvas { width: 100%; max-width: none; }
+.oval-board .label { font-size: clamp(5px, 0.85vw, 8px); min-height: 1em; }
+
+/* coins: smaller, centred below the board, clear of the blind chips and the seats */
+.pot-center { left: 50%; top: 63%; width: 26%; gap: 2px; }
+#pile { max-width: 90px; }
+.pot-total small { font-size: 7px; }
+.pot-total div { font-size: clamp(10px, 1.6vw, 16px); margin-top: 2px; }
+
+/* phones: the real cards are on the table, so no board there */
+.is-player .oval-board { display: none; }
+.is-player .pot-center { top: 52%; width: 44%; }
+.is-player .oval { width: 100%; min-width: 0; }
+
+@media (max-width: 640px) {
+  .oval { width: 100%; min-width: 0; }
+  .table-wrap { padding: 74px 40px 80px; }
+  .oval-board { top: 34%; }
+  .oval-board .slot { width: clamp(20px, 8vw, 34px); }
+  .pot-center { top: 61%; width: 40%; }
+}
+
+/* compact seat boxes so the top and bottom seats fit on screen */
+.seat .wallet { display: none; }
+.seat .hand canvas { width: 24px; }
+.seat .avatar { width: 30px; height: 30px; }
+.seat { gap: 2px; padding: 5px 4px; }
+.mode-dealer .seat .qr { width: 56px; height: 56px; }
+
+/* dealer: START ROUND */
+#start-box { margin-top: 10px; }
+#start-box[hidden] { display: none; }
+#start-round { font-size: clamp(11px, 2vw, 15px); padding: 14px 30px; min-height: 52px; }
+#start-err { margin: 6px 0 0; min-height: 1.2em; }
+
+/* ---- QR codes: always bright white on a white tile (never dimmed, even on an empty seat) ---- */
+.seat.empty-seat > :not(.name):not(.bet):not(.qr) { opacity: 0.25; filter: grayscale(1); }
+.seat .qr, .seat.empty-seat .qr { opacity: 1; filter: none; background: #fff; padding: 4px; border: 2px solid #fff; box-sizing: content-box; }
+.pill-btn { cursor: pointer; font-family: var(--px); border: 0; color: var(--gold); }
+.pill-btn:hover { background: #2e2850; }
+.pill-btn[hidden] { display: none; }
+
+/* the "all seats" dialog */
+#qr-dialog { border: 0; padding: 22px; width: min(640px, calc(100vw - 24px)); background: #1b1630; color: var(--cream);
+  font-family: var(--mono); font-size: 18px; box-shadow: 0 0 0 4px var(--ink), 0 0 0 8px var(--gold-dark), 0 0 0 12px var(--ink); }
+#qr-dialog::backdrop { background: rgba(5, 3, 15, 0.8); }
+#qr-dialog h2 { font-family: var(--px); font-size: 13px; color: var(--gold); margin: 0 0 10px; }
+#qr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 16px; margin: 14px 0; }
+#qr-grid figure { margin: 0; text-align: center; }
+#qr-grid img { width: 100%; max-width: 150px; background: #fff; padding: 8px; image-rendering: pixelated; opacity: 1; filter: none; }
+#qr-grid figcaption { font-family: var(--px); font-size: 8px; line-height: 1.7; margin-top: 6px; color: var(--cream); }
+#qr-grid figcaption small { display: block; color: #8a83b0; font-size: 7px; }
+
+/* the dealer's START ROUND button sits to the right of the status text instead of under it */
+.statusbar.with-start { display: grid; grid-template-columns: 1fr auto; align-items: center; column-gap: 18px; text-align: left; }
+.statusbar.with-start #status-headline, .statusbar.with-start #status-detail { grid-column: 1; text-align: left; }
+.statusbar.with-start #start-box { grid-column: 2; grid-row: 1 / span 2; margin: 0; text-align: center; }
+#start-round { font-size: clamp(10px, 1.6vw, 13px); padding: 12px 20px; min-height: 46px; }
+#start-err { max-width: 220px; font-size: 7px; }
+@media (max-width: 640px) {
+  .statusbar.with-start { grid-template-columns: 1fr; text-align: center; }
+  .statusbar.with-start #status-headline, .statusbar.with-start #status-detail { text-align: center; }
+  .statusbar.with-start #start-box { grid-column: 1; grid-row: auto; margin-top: 8px; }
+  #start-err { max-width: none; }
+}
+
+/* seat labels under a QR stay readable */
+.mode-dealer .seat.empty-seat .name { color: var(--cream); }

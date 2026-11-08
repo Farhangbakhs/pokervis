@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>AutoPoker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="vendor/style.css" />
+  <link rel="stylesheet" href="live.css" />
+</head>
+<body>
+  <header>
+    <h1><canvas id="logo-coin" class="px"></canvas> POKER<span>VIS</span></h1>
+    <div class="statuses">
+      <div class="pill" id="net-status" data-state="wait">TABLE <b>…</b></div>
+      <div class="pill" id="cam-status" data-state="wait">CAMERA <b>…</b></div>
+      <div class="pill" id="chain-status" data-state="demo">SOLANA <b>DEVNET</b></div>
+      <button class="pill pill-btn" id="qr-btn" type="button" hidden>SEAT QR CODES</button>
+      <div class="pill" id="info-pill"><span id="blinds"></span> <b id="street">PRE-FLOP</b></div>
+    </div>
+  </header>
+
+  <!-- dealer sign-in (only when opened as /dealer) -->
+  <section id="dealer-login" class="panel" hidden>
+    <h2>DEALER PIN</h2>
+    <input id="d-pin" type="password" inputmode="numeric" placeholder="PIN" autocomplete="current-password" />
+    <button id="d-go" class="go wide" type="button">ENTER</button>
+    <p id="d-err" class="error"></p>
+  </section>
+
+  <main>
+    <!-- the one line everybody watches: what is happening, and who has to do something -->
+    <section id="status" class="statusbar" data-code="wait" aria-live="polite">
+      <div id="status-headline">CONNECTING…</div>
+      <div id="status-detail"></div>
+      <!-- dealer only: the round never starts by itself -->
+      <div id="start-box" hidden>
+        <button id="start-round" class="go" type="button">START ROUND?</button>
+        <div id="start-err" class="error"></div>
+      </div>
+    </section>
+
+
+    <section class="pot" aria-label="Players and pot">
+      <div id="banner" aria-live="polite"></div>
+      <div class="table-wrap">
+        <div class="oval" id="oval">
+          <div class="oval-board" id="oval-board">
+        <div class="slot empty"><canvas class="px"></canvas><div class="label"></div></div>
+        <div class="slot empty"><canvas class="px"></canvas><div class="label"></div></div>
+        <div class="slot empty"><canvas class="px"></canvas><div class="label"></div></div>
+        <div class="slot empty"><canvas class="px"></canvas><div class="label"></div></div>
+        <div class="slot empty"><canvas class="px"></canvas><div class="label"></div></div>
+          </div>
+          <div class="pot-center">
+            <canvas id="pile" class="px"></canvas>
+            <div class="pot-total">
+              <small>POT</small>
+              <div><span id="pot-amount">0</span> <em>CHIPS</em></div>
+            </div>
+          </div>
+          <div id="seats"></div>
+        </div>
+      </div>
+
+      <!-- sit down (opened from a seat QR) -->
+      <div id="join" class="panel" hidden>
+        <h2>TAKE SEAT <span id="join-seat"></span></h2>
+        <input id="join-name" maxlength="20" placeholder="YOUR NAME" autocomplete="nickname" />
+        <p class="hint">A free guest wallet is made on this phone. You play with CHIP play money (devnet, no value) and no SOL is needed. Winnings are paid straight to your wallet on Solana.</p>
+        <p class="wallet-line">WALLET <code id="join-wallet"></code></p>
+        <button id="b-sit" class="go" type="button">SIT DOWN</button>
+        <p id="join-err" class="error"></p>
+      </div>
+
+      <!-- your controls (only for a seated player) -->
+      <div id="controls" class="panel" hidden>
+        <div class="me-line">
+          <canvas id="me-avatar" class="px"></canvas>
+          <div><b id="me-name"></b><br /><span id="me-stack"></span></div>
+          <div id="me-hint"></div>
+        </div>
+        <div class="btn-row">
+          <button id="b-fold" class="danger" type="button">FOLD</button>
+          <button id="b-call" type="button">CHECK</button>
+          <button id="b-raise" class="go" type="button">RAISE</button>
+        </div>
+        <div id="raise-box" hidden>
+          <div class="raise-val">RAISE TO <b id="raise-val"></b></div>
+          <input id="raise" type="range" />
+          <div class="btn-row">
+            <button id="p-half" type="button">½ POT</button>
+            <button id="p-pot" type="button">POT</button>
+            <button id="p-all" type="button">ALL-IN</button>
+          </div>
+          <button id="b-raise-go" class="go wide" type="button">CONFIRM RAISE</button>
+        </div>
+        <p id="act-err" class="error"></p>
+        <button id="b-leave" class="ghost" type="button">LEAVE TABLE &amp; CASH OUT</button>
+      </div>
+    </section>
+
+    <!-- dealer only: everything is automatic, these are the escape hatches -->
+    <details id="dealer-tools" class="panel" hidden>
+      <summary>CAMERA &amp; TOOLS</summary>
+      <div class="tools-grid">
+        <div>
+          <h3>WHAT THE CAMERA SEES</h3>
+          <img id="cam-img" alt="no camera picture yet" />
+          <div id="cam-reads" class="hint"></div>
+        </div>
+        <div>
+          <h3>SET UP</h3>
+          <a class="btn" href="/areas" target="_blank" rel="noopener">EDIT TABLE AREAS</a>
+          <h3>EMERGENCY</h3>
+          <button id="t-abort" class="danger" type="button">RESET THIS HAND</button>
+          <p class="hint">Cancels the hand, nobody wins or loses chips.</p>
+        </div>
+      </div>
+      <p id="t-err" class="error"></p>
+    </details>
+  </main>
+
+  <dialog id="qr-dialog">
+    <h2>SEAT QR CODES</h2>
+    <p class="hint">Scan your own seat's code to sign back in (new tab, cleared browser, lost sign-in). It only works for the wallet that owns the seat: anyone else is told the seat is taken.</p>
+    <div id="qr-grid"></div>
+    <button id="qr-close" type="button">CLOSE</button>
+  </dialog>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

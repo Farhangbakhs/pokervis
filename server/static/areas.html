@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AutoPoker Table Areas</title>
+<style>
+  :root { --bg:#0b1511; --card:#14241c; --ink:#eaf2ec; --dim:#8fa597; --ok:#3ddc84; --bad:#ff6b6b; --line:#27402f; }
+  @media (prefers-color-scheme: light) { :root { --bg:#eef3ef; --card:#fff; --ink:#14221a; --dim:#586c5f; --line:#cfdcd2; } }
+  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 system-ui,sans-serif; padding:12px; }
+  h1 { font-size:1rem; margin:0 0 4px; } p { margin:4px 0 10px; color:var(--dim); }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  button { font:inherit; font-weight:600; padding:10px 12px; border:2px solid transparent; border-radius:10px; background:#2c4a39; color:#fff; }
+  button.sel { border-color:#fff; } button.go { background:#1f7a4a; } button.gray { background:#4a5a52; }
+  canvas { width:100%; display:block; border-radius:10px; background:#000; touch-action:none; }
+  .msg { min-height:1.4em; margin-top:8px; } .ok { color:var(--ok); } .bad { color:var(--bad); }
+  #login { max-width:320px; margin:18vh auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  input { font:inherit; padding:10px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--ink); width:100%; }
+</style>
+</head>
+<body>
+<div id="login"><h1>Dealer PIN</h1><input id="pin" inputmode="numeric" placeholder="PIN"><button class="go" id="go" style="margin-top:8px;width:100%">Continue</button><p class="bad" id="lerr"></p></div>
+
+<div id="app" hidden>
+  <h1>Table areas</h1>
+  <p>Pick an area, then <b>drag on the picture</b> to draw it. Make each one big: the Board area should cover every board card, each Seat area both of that player's cards.</p>
+  <div class="tabs" id="tabs"></div>
+  <canvas id="c"></canvas>
+  <div class="tabs" style="margin-top:8px">
+    <button class="go" id="save">Save</button><button class="gray" id="clear">Clear this area</button><button class="gray" id="reset">Reset all</button>
+  </div>
+  <div class="msg" id="msg"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const COLORS = { BOARD:"#ffb020", S1:"#3ddc84", S2:"#4aa8ff", S3:"#ff6bd6", S4:"#b08cff" };
+const LABEL = { BOARD:"Board", S1:"Seat 1", S2:"Seat 2", S3:"Seat 3", S4:"Seat 4" };
+let token = sessionStorage.getItem("dealer_token"), areas = {}, sel = "BOARD", img = null, drag = null, names = [];
+const api = async (p, body) => { const r = await fetch(p, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.detail || r.statusText); return j; };
+const say = (t, cls) => { $("msg").textContent = t; $("msg").className = "msg " + (cls || ""); };
+
+$("go").onclick = async () => { try { const r = await fetch("/api/dealer/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: $("pin").value }) });
+  const j = await r.json(); if (!r.ok) throw new Error(j.detail); token = j.token; sessionStorage.setItem("dealer_token", token); init(); } catch (e) { $("lerr").textContent = e.message; } };
+
+function tabs() { $("tabs").innerHTML = ""; for (const n of names) { const b = document.createElement("button"); b.textContent = LABEL[n] + (areas[n] ? "" : " (not set)");
+  b.style.background = COLORS[n]; b.style.color = "#111"; b.className = n === sel ? "sel" : ""; b.onclick = () => { sel = n; tabs(); draw(); }; $("tabs").appendChild(b); } }
+
+const cv = $("c"), ctx = cv.getContext("2d");
+function draw() {
+  if (!img) return; cv.width = img.naturalWidth; cv.height = img.naturalHeight; ctx.drawImage(img, 0, 0);
+  const lw = Math.max(3, cv.width / 220), fs = Math.max(16, cv.width / 26); ctx.font = `bold ${fs}px system-ui`;
+  for (const n of names) { const r = (drag && drag.name === n) ? drag.rect : areas[n]; if (!r) continue;
+    const [x1, y1, x2, y2] = [r[0] * cv.width, r[1] * cv.height, r[2] * cv.width, r[3] * cv.height];
+    ctx.fillStyle = COLORS[n] + "33"; ctx.fillRect(x1, y1, x2 - x1, y2 - y1); ctx.strokeStyle = COLORS[n]; ctx.lineWidth = n === sel ? lw * 1.8 : lw; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    ctx.fillStyle = COLORS[n]; ctx.fillText(LABEL[n], x1 + 6, y1 + fs); }
+}
+const pt = e => { const b = cv.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)), Math.min(1, Math.max(0, (e.clientY - b.top) / b.height))]; };
+cv.addEventListener("pointerdown", e => { cv.setPointerCapture(e.pointerId); const p = pt(e); drag = { name: sel, a: p, rect: [p[0], p[1], p[0], p[1]] }; });
+cv.addEventListener("pointermove", e => { if (!drag) return; const p = pt(e); drag.rect = [Math.min(drag.a[0], p[0]), Math.min(drag.a[1], p[1]), Math.max(drag.a[0], p[0]), Math.max(drag.a[1], p[1])]; draw(); });
+cv.addEventListener("pointerup", () => { if (!drag) return; const r = drag.rect; if (r[2] - r[0] > 0.03 && r[3] - r[1] > 0.03) { areas[drag.name] = r.map(v => +v.toFixed(4)); say("Drawn. Press Save when all areas look right."); } drag = null; tabs(); draw(); });
+
+async function frame() { try { const r = await fetch("/api/cam/latest.jpg", { headers: { Authorization: "Bearer " + token } }); if (!r.ok) throw 0;
+  const u = URL.createObjectURL(await r.blob()); const i = new Image(); i.onload = () => { img = i; draw(); URL.revokeObjectURL(u); }; i.src = u; } catch { say("No camera picture yet. Start the camera page on the phone.", "bad"); } }
+
+$("save").onclick = async () => { try { await api("/api/vision/areas", { areas }); say("Saved. The reader picks it up within a few seconds.", "ok"); } catch (e) { say(e.message, "bad"); } };
+$("clear").onclick = () => { delete areas[sel]; tabs(); draw(); say("Cleared. Press Save to keep that."); };
+$("reset").onclick = async () => { if (confirm("Reset all areas to the defaults?")) { areas = {}; const j = await api("/api/vision/areas"); areas = j.areas; tabs(); draw(); say("Defaults loaded. Press Save to keep them."); } };
+
+async function init() { $("login").hidden = true; $("app").hidden = false;
+  try { const j = await api("/api/vision/areas"); areas = j.areas; names = j.names; } catch (e) { sessionStorage.removeItem("dealer_token"); location.reload(); return; }
+  tabs(); await frame(); setInterval(() => { if (!drag) frame(); }, 1500); }
+if (token) init();
+</script>
+</body>
+</html>
