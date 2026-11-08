@@ -73,6 +73,13 @@ def crop(frame: np.ndarray, rect: list[float]) -> tuple[np.ndarray, tuple[int, i
     return frame[y1:y2, x1:x2], (x1, y1)
 
 
+def touches_edge(box: tuple[float, float, float, float], crop_w: int, crop_h: int, margin: int = 3) -> bool:
+    """True if a detection box reaches the edge of its crop: the area boundary sliced that card corner, so its
+    reading is unreliable (a cut-off "10" reads as a 9 or a lone suit)."""
+    x1, y1, x2, y2 = box
+    return x1 <= margin or y1 <= margin or x2 >= crop_w - margin or y2 >= crop_h - margin
+
+
 def label_for(area: str, index: int) -> str:
     """Zone label the server understands: BOARD -> B1..B5, S2 -> 2a, 2b (then 2c.. = too many cards)."""
     if area == "BOARD":

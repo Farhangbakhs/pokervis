@@ -30,11 +30,26 @@
     <p id="d-err" class="error"></p>
   </section>
 
+  <!-- dealer only: the camera phone. QR + plain link + live status, visible right after the PIN -->
+  <section id="cam-panel" class="panel" hidden>
+    <h2>CAMERA PHONE <span id="cam-state">WAITING</span></h2>
+    <div class="cam-row">
+      <img id="cam-qr-main" class="px" alt="QR code: scan with the camera phone" />
+      <div>
+        <p class="hint">Scan with the phone that will watch the table (or open the link below on it). Enter the dealer PIN, tap Start camera.</p>
+        <a id="cam-url" target="_blank" rel="noopener"></a>
+        <button id="cam-copy" type="button">COPY LINK</button>
+        <p class="hint" id="cam-help">The card reader needs about a minute to load after a fresh start.</p>
+      </div>
+    </div>
+  </section>
+
   <main>
     <!-- the one line everybody watches: what is happening, and who has to do something -->
     <section id="status" class="statusbar" data-code="wait" aria-live="polite">
       <div id="status-headline">CONNECTING…</div>
       <div id="status-detail"></div>
+      <a id="tx-link" class="tx-link" target="_blank" rel="noopener" hidden>VIEW PAYOUT ON SOLANA EXPLORER</a>
       <!-- dealer only: the round never starts by itself -->
       <div id="start-box" hidden>
         <button id="start-round" class="go" type="button">START ROUND?</button>
@@ -68,10 +83,33 @@
       <!-- sit down (opened from a seat QR) -->
       <div id="join" class="panel" hidden>
         <h2>TAKE SEAT <span id="join-seat"></span></h2>
-        <input id="join-name" maxlength="20" placeholder="YOUR NAME" autocomplete="nickname" />
-        <p class="hint">A free guest wallet is made on this phone. You play with CHIP play money (devnet, no value) and no SOL is needed. Winnings are paid straight to your wallet on Solana.</p>
-        <p class="wallet-line">WALLET <code id="join-wallet"></code></p>
-        <button id="b-sit" class="go" type="button">SIT DOWN</button>
+        <!-- step 1: log in with a Solana wallet -->
+        <div id="wallet-pick" hidden>
+          <p class="hint">A SOLANA WALLET IS YOUR LOGIN. No wallet, no game. Your address is your account: your chips and history are tied to it. Chips are bought with devnet SOL from your wallet and cashed out back to it.</p>
+          <div id="provider-btns"></div>
+          <div id="no-provider" hidden>
+            <p class="hint">No wallet found in this browser. On a phone, open this page inside your wallet app:</p>
+            <a class="btn" id="dl-phantom" href="#">OPEN IN PHANTOM</a>
+            <a class="btn" id="dl-solflare" href="#">OPEN IN SOLFLARE</a>
+          </div>
+          <details class="wallet-tools">
+            <summary>OR IMPORT A WALLET KEY (DEVNET KEYS ONLY)</summary>
+            <input id="import-key" placeholder="PASTE SECRET KEY" autocomplete="off" />
+            <button id="b-import" type="button">IMPORT</button>
+          </details>
+        </div>
+        <!-- step 2: chips, then sit down -->
+        <div id="wallet-ready" hidden>
+          <input id="join-name" maxlength="20" placeholder="YOUR NAME" autocomplete="nickname" />
+          <p class="wallet-line">WALLET <code id="join-wallet"></code> <span id="join-kind"></span></p>
+          <p class="wallet-line">DEVNET SOL <b id="join-sol">…</b></p>
+          <p id="join-net" class="hint" hidden></p>
+          <p class="wallet-line">BANKROLL <b id="join-bank">…</b> CHIP</p>
+          <button id="b-join-buy" class="go" type="button">BUY IN</button>
+          <button id="b-sit" class="go" type="button">SIT DOWN</button>
+          <button class="ghost stats-open" type="button">MY WALLET &amp; STATS</button>
+          <button id="b-switch" class="ghost" type="button">SWITCH WALLET</button>
+        </div>
         <p id="join-err" class="error"></p>
       </div>
 
@@ -98,8 +136,17 @@
           <button id="b-raise-go" class="go wide" type="button">CONFIRM RAISE</button>
         </div>
         <p id="act-err" class="error"></p>
-        <button id="b-leave" class="ghost" type="button">LEAVE TABLE &amp; CASH OUT</button>
+        <button class="ghost stats-open" type="button">MY WALLET &amp; STATS</button>
+        <button id="b-buy" class="go wide" type="button" hidden>BUY CHIPS</button>
+        <button id="b-cashsol" class="go wide" type="button">CASH OUT TO SOL</button>
+        <button id="b-leave" class="ghost" type="button">LOG OUT (KEEP MY CHIPS)</button>
       </div>
+    </section>
+
+    <!-- every real on-chain transaction of this table, live -->
+    <section id="feed" class="panel feed" hidden>
+      <h2>LIVE ON SOLANA DEVNET <a id="house-link" target="_blank" rel="noopener"></a></h2>
+      <div id="feed-list" class="hist"></div>
     </section>
 
     <!-- dealer only: everything is automatic, these are the escape hatches -->
@@ -114,6 +161,8 @@
         <div>
           <h3>SET UP</h3>
           <a class="btn" href="/areas" target="_blank" rel="noopener">EDIT TABLE AREAS</a>
+          <h3>PLAYERS</h3>
+          <div id="kick-list" class="hint">NOBODY SEATED</div>
           <h3>EMERGENCY</h3>
           <button id="t-abort" class="danger" type="button">RESET THIS HAND</button>
           <p class="hint">Cancels the hand, nobody wins or loses chips.</p>
@@ -123,9 +172,29 @@
     </details>
   </main>
 
+  <dialog id="stats-dialog">
+    <h2>MY WALLET &amp; STATS</h2>
+    <p class="wallet-line">WALLET <code id="st-wallet"></code></p>
+    <div id="st-tiles" class="tiles"></div>
+    <div id="st-chart" class="chart" role="img" aria-label="Chip balance after each hand"></div>
+    <p class="hint" id="st-note"></p>
+    <h3>RECENT HANDS</h3>
+    <div id="st-list" class="hist"></div>
+    <details class="wallet-tools">
+      <summary>BACK UP / RESTORE IMPORTED KEY</summary>
+      <p class="hint">Your wallet key lives only in this browser. Copy it somewhere safe to play from another phone with the same chips. Never share it.</p>
+      <button id="st-copy" type="button">COPY WALLET KEY</button>
+      <input id="st-key" placeholder="PASTE A WALLET KEY TO RESTORE" autocomplete="off" />
+      <button id="st-restore" type="button">RESTORE</button>
+      <p id="st-err" class="error"></p>
+    </details>
+    <button id="st-close" type="button">CLOSE</button>
+  </dialog>
+
   <dialog id="qr-dialog">
     <h2>SEAT QR CODES</h2>
     <p class="hint">Scan your own seat's code to sign back in (new tab, cleared browser, lost sign-in). It only works for the wallet that owns the seat: anyone else is told the seat is taken.</p>
+    <figure id="cam-qr-fig" class="cam-qr"><img id="cam-qr" alt="QR for the camera phone" /><figcaption>CARD CAMERA<small>SCAN WITH THE PHONE THAT READS THE CARDS</small></figcaption></figure>
     <div id="qr-grid"></div>
     <button id="qr-close" type="button">CLOSE</button>
   </dialog>

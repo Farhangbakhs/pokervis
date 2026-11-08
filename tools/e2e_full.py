@@ -48,9 +48,14 @@ r = c.post("/api/dealer/confirm_showdown", json={"reveal": {str(A["seat"]): "AdA
 r.raise_for_status()
 s = c.get("/api/state").json()
 print(f"winner seat(s): {s['result']['winners']}  hand: {s['result']['hand_names']}  settled in {time.time()-t0:.1f}s")
-print("payout tx:", s["settlement"]["explorer_url"])
+while s["settlement"] is None and time.time() - t0 < 60:     # the payout confirms in the background
+    assert not s["settle_error"], s["settle_error"]
+    time.sleep(0.5); s = c.get("/api/state").json()
+print(f"payout confirmed after {time.time()-t0:.1f}s: {s['settlement']['explorer_url']}")
 assert s["result"]["winners"] == [A["seat"]], "Alice (aces) should win"
 c.post("/api/dealer/next_hand", headers=dh)
 for p, n in ((A, "Alice"), (B, "Bob")):
-    c.post("/api/cashout", headers=p["h"])
-print("both cashed out. FULL STACK OK")
+    c.post("/api/cashout", headers=p["h"])                 # log out: chips stay in the wallet
+    h = c.get("/api/history", params={"pubkey": p["pub"]}).json()
+    print(n, "history:", h["stats"], "points:", len(h["series"]))
+print("both logged out. FULL STACK OK")

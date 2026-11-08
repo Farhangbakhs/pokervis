@@ -21,7 +21,7 @@ if (!fs.existsSync(keypairPath)) {
 }
 
 const chain = new Chain({
-  rpc, keypairPath, stateDir: process.env.CHAIN_STATE_DIR ?? ".state", maxBuyin: Number(process.env.MAX_BUYIN ?? 5000),
+  rpc, keypairPath, stateDir: process.env.CHAIN_STATE_DIR ?? ".state", maxBuyin: Number(process.env.MAX_BUYIN ?? 5000), lamportsPerChip: Number(process.env.LAMPORTS_PER_CHIP ?? 10_000),
 });
 const pub = chain.payer.publicKey;
 console.log(`\nServer wallet (fee payer + mint authority): ${pub.toBase58()}`);
@@ -39,7 +39,7 @@ if (bal < 0.5 * LAMPORTS_PER_SOL) {
     console.log(`Airdrop failed (${(e as Error).message}).`);
   }
 }
-if (bal < 0.05 * LAMPORTS_PER_SOL) {
+if (bal < 0.01 * LAMPORTS_PER_SOL) {
   console.log(`\nNeed devnet SOL. Send ~1-2 SOL to ${pub.toBase58()} (e.g. from Phantom on devnet, or https://faucet.solana.com), then re-run: npm run setup`);
   process.exit(2);
 }

@@ -1,7 +1,7 @@
 // AutoPoker table UI. Rendering (pixel cards, coin pile, seats, banners) is the teammate's design
 // (vendor/pixel.js + vendor/style.css, copied unchanged); the data now comes from the game server:
 //   WebSocket /ws/table  -> full public table state, pushed on every change
-//   REST /api/auth/*     -> sign in at a seat (guest wallet signature + the seat's QR code)
+//   REST /api/auth/*     -> sign in at a seat (real Solana wallet signature + the seat's QR code)
 //   REST /api/action     -> fold / check / call / raise (seat comes from the signed session token)
 import { renderCard, renderBack, renderPile, renderAvatar, renderChip, spinCoin, cardLabel, parseCard } from './vendor/pixel.js';
 
@@ -17,7 +17,7 @@ document.body.classList.toggle('mode-dealer', DEALER);
 const STREETS = { 3: 'THE FLOP!', 4: 'THE TURN!', 5: 'THE RIVER!' };
 
 // ---------------------------------------------------------------------------
-// Guest wallet + session. The phone keeps an ed25519 keypair in localStorage and proves it owns it by
+// Wallet + session. The wallet proves it owns its address by
 // signing a one-time challenge; the server answers with a token that is bound to (wallet, seat).
 // ---------------------------------------------------------------------------
 const ALPHA = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
@@ -35,15 +35,75 @@ const b58 = (bytes) => {
 const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
 const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-function loadWallet() {
-  try {
-    let sk = localStorage.getItem('pokervis.sk');
-    if (!sk) { sk = b64(nacl.sign.keyPair().secretKey); localStorage.setItem('pokervis.sk', sk); }
-    const kp = nacl.sign.keyPair.fromSecretKey(unb64(sk));
-    return { kp, pub: b58(kp.publicKey) };
-  } catch (e) { console.warn('wallet unavailable', e); return null; }
+// A real Solana wallet is REQUIRED to play. There is no guest mode and no auto-generated key:
+//  - PROVIDER: Phantom / Solflare / Backpack (browser extension, or the wallet app's own browser on a phone). The wallet
+//    holds the key; it signs the login message and approves every SOL transaction.
+//  - IMPORTED: the user pastes a devnet secret key (e.g. from `solana-keygen`); it is kept in this browser only.
+// Either way the wallet's public address is the player's identity everywhere (table, ledger, Tiger history).
+const WKEY = 'pokervis.wallet';
+const PROVIDERS = [
+  { id: 'phantom', name: 'PHANTOM', get: () => (window.phantom && window.phantom.solana) || (window.solana && window.solana.isPhantom ? window.solana : null) },
+  { id: 'solflare', name: 'SOLFLARE', get: () => (window.solflare && window.solflare.isSolflare ? window.solflare : null) },
+  { id: 'backpack', name: 'BACKPACK', get: () => (window.backpack && window.backpack.isBackpack ? window.backpack : null) },
+];
+const availableProviders = () => PROVIDERS.filter((x) => x.get());
+
+const unb58 = (str) => {
+  const out = [0];
+  for (const ch of str) {
+    const v = ALPHA.indexOf(ch);
+    if (v < 0) throw new Error('not a valid key');
+    let c = v;
+    for (let j = 0; j < out.length; j++) { c += out[j] * 58; out[j] = c & 0xff; c >>= 8; }
+    while (c) { out.push(c & 0xff); c >>= 8; }
+  }
+  let lead = 0;
+  for (const ch of str) { if (ch !== '1') break; lead++; }
+  return Uint8Array.from([...new Array(lead).fill(0), ...out.reverse()]);
+};
+
+async function providerWallet(id, silent) {
+  const def = PROVIDERS.find((x) => x.id === id);
+  const p = def && def.get();
+  if (!p) throw new Error(`${def ? def.name : 'Wallet'} not found in this browser`);
+  const r = await p.connect(silent ? { onlyIfTrusted: true } : undefined);
+  const pub = ((r && r.publicKey) || p.publicKey).toString();
+  return { kind: 'provider', id, name: def.name, pub, provider: p,
+    sign: async (m) => { const out = await p.signMessage(m, 'utf8'); return out.signature || out; } };
 }
-const W = loadWallet();
+
+function importedWallet(secret) {
+  let bytes;
+  const t = String(secret || '').trim();
+  if (t.startsWith('[')) bytes = Uint8Array.from(JSON.parse(t));
+  else if (/^[1-9A-HJ-NP-Za-km-z]{60,100}$/.test(t)) bytes = unb58(t);
+  else bytes = unb64(t);
+  const kp = bytes.length === 32 ? nacl.sign.keyPair.fromSeed(bytes) : bytes.length === 64 ? nacl.sign.keyPair.fromSecretKey(bytes) : null;
+  if (!kp) throw new Error('that is not a Solana secret key');
+  return { kind: 'imported', name: 'IMPORTED KEY', pub: b58(kp.publicKey), secret: kp.secretKey, sign: async (m) => nacl.sign.detached(m, kp.secretKey) };
+}
+
+async function initWallet() {
+  let mode = null;
+  try { mode = localStorage.getItem(WKEY); } catch { /* storage blocked */ }
+  for (let i = 0; i < 8 && !availableProviders().length; i++) await sleep(50);      // wallet extensions inject a moment after load
+  try {
+    if (mode && mode.startsWith('provider:')) return await providerWallet(mode.slice(9), true);
+    if (mode === 'imported') return importedWallet(localStorage.getItem('pokervis.sk'));
+  } catch { /* wallet locked / key gone: ask again */ }
+  return null;                                                                       // no wallet = no game
+}
+let W = await initWallet();
+
+let web3Promise = null;
+const loadWeb3 = () => web3Promise || (web3Promise = new Promise((res, rej) => {
+  if (window.solanaWeb3) return res(window.solanaWeb3);
+  const el = document.createElement('script');
+  el.src = 'https://unpkg.com/@solana/web3.js@1.98.0/lib/index.iife.min.js';
+  el.onload = () => res(window.solanaWeb3);
+  el.onerror = () => { web3Promise = null; rej(new Error('could not load the Solana library')); };
+  document.head.appendChild(el);
+}));
 
 const SKEY = 'pokervis.session';
 let session = (() => { try { return JSON.parse(localStorage.getItem(SKEY)); } catch { return null; } })();
@@ -77,11 +137,11 @@ async function apiOnce(path, body) {
 }
 const savedName = () => { try { return localStorage.getItem('pokervis.name') || ''; } catch { return ''; } };
 
-/** Prove we own the guest wallet (sign a one-time challenge), take/keep the seat, remember the session. */
+/** Prove we own the wallet (sign a one-time challenge), take/keep the seat, remember the session. */
 async function signIn(seat, code, name) {
   if (!W) throw new Error('This browser cannot make a wallet');
   const ch = await api('/api/auth/challenge', { pubkey: W.pub });
-  const sig = nacl.sign.detached(new TextEncoder().encode(ch.message), W.kp.secretKey);
+  const sig = await W.sign(new TextEncoder().encode(ch.message));          // the wallet proves it owns the address
   const r = await api('/api/auth/login', { pubkey: W.pub, nonce: ch.nonce, signature: b64(sig), seat, seat_code: code, name });
   saveSession({ seat, token: r.token, code, at: Date.now() });   // the seat code is kept so a lost token can be renewed silently
   return r;
@@ -284,7 +344,7 @@ function renderSeats(S) {
     if (seat.to_act) flag = 'TO ACT';
     else if (seat.folded) flag = 'FOLDED';
     else if (inHand && seat.stack === 0 && seat.bet > 0) flag = 'ALL IN!';
-    else if (!inHand && seat.stack === 0) flag = 'OUT: REBUY';
+    else if (!inHand && seat.stack === 0) flag = 'OUT: BUY IN';
     const f = el.querySelector('.flag');
     f.hidden = !flag;
     f.textContent = flag;
@@ -336,6 +396,29 @@ function boardOnTable(S) {
 }
 
 /** Dealer only: the round never starts by itself. Explains why when it cannot start yet. */
+function renderFeed(S) {
+  const box = $('#feed');
+  const house = S.sol && S.sol.house;
+  box.hidden = !house;
+  if (!house) return;
+  const hl = $('#house-link');
+  hl.href = `https://explorer.solana.com/address/${house}?cluster=devnet`;
+  hl.textContent = `HOUSE WALLET ${short(house)}`;
+  const label = { 'buy-in': 'BOUGHT IN', payout: 'WON', 'cash-out': 'CASHED OUT' };
+  const list = $('#feed-list');
+  const sig = (S.feed || []).map((f) => f.sig).join('|');
+  if (list.dataset.sig === sig) return;
+  list.dataset.sig = sig;
+  list.innerHTML = '';
+  if (!(S.feed || []).length) { list.textContent = 'WAITING FOR THE FIRST TRANSACTION…'; return; }
+  for (const f of S.feed) {
+    const a = document.createElement('a');
+    a.href = f.url; a.target = '_blank'; a.rel = 'noopener';
+    a.innerHTML = `<span>${label[f.kind] || f.kind.toUpperCase()} · ${String(f.who).toUpperCase()}</span><b>${f.chips} CHIP</b><span>${f.sig.slice(0, 8)}…</span>`;
+    list.appendChild(a);
+  }
+}
+
 function renderStart(S) {
   const show = DEALER && !!dealerToken && S.phase === 'waiting';
   $('#start-box').hidden = !show;
@@ -370,6 +453,10 @@ function renderStatus(S) {
     if (extra.length) detail = `${detail ? detail + ' · ' : ''}${extra.join(' · ')}`;
   }
   $('#status-detail').textContent = detail || '';
+  const tx = $('#tx-link');
+  const url = S.settlement && S.settlement.explorer_url;
+  tx.hidden = !(url && S.result);
+  if (url) tx.href = url;
   const out = boardOnTable(S).length;
   const street = out >= 5 ? 'RIVER' : out === 4 ? 'TURN' : out === 3 ? 'FLOP' : 'PRE-FLOP';
   $('#street').textContent = S.phase === 'waiting' ? 'WAITING' : street;
@@ -398,7 +485,7 @@ function renderControls(S) {
   const turn = myTurn(S);
   const call = Math.min(toCall(S, m), m.stack);
   $('#me-name').textContent = m.name.toUpperCase();
-  $('#me-stack').textContent = `STACK ${m.stack}`;
+  $('#me-stack').textContent = `STACK ${m.stack}${S.sol ? ' · ' + solText(m.stack) : ''}`;
   let hint;
   if (turn) hint = call ? `${call} TO CALL` : 'NOTHING TO CALL';
   else if (S.phase === 'betting' && S.to_act) hint = `WAITING FOR ${S.seats[S.to_act - 1].name.toUpperCase()}`;
@@ -418,15 +505,12 @@ function renderControls(S) {
     if (+r.value < +r.min || +r.value > +r.max) r.value = S.min_raise_to;
     $('#raise-val').textContent = r.value;
   }
-  let rebuy = $('#b-rebuy');
-  if (!rebuy) {
-    rebuy = document.createElement('button');
-    rebuy.id = 'b-rebuy'; rebuy.type = 'button'; rebuy.className = 'go wide';
-    rebuy.onclick = async () => { try { await api('/api/rebuy', {}); } catch (e) { $('#act-err').textContent = e.message; } };
-    $('#b-leave').before(rebuy);
-  }
-  rebuy.hidden = !(m.stack < S.buy_in && S.phase === 'waiting');      // buy in between rounds, while the dealer has not started yet
-  rebuy.textContent = m.stack === 0 ? `REBUY ${S.buy_in} CHIPS` : `TOP UP TO ${S.buy_in}`;
+  const idle = S.phase === 'waiting' || S.phase === 'done';
+  $('#b-buy').hidden = !(S.phase === 'waiting');
+  $('#b-buy').textContent = m.stack === 0 ? `OUT OF CHIPS: BUY IN ${S.buy_in} CHIP = ${solText(S.buy_in)}` : `BUY MORE: ${S.buy_in} CHIP = ${solText(S.buy_in)}`;
+  $('#b-cashsol').hidden = false;
+  $('#b-cashsol').disabled = !idle || m.stack === 0;
+  $('#b-cashsol').textContent = `CASH OUT ${m.stack} CHIP = ${solText(m.stack)}`;
 }
 
 async function act(type, amount) {
@@ -453,8 +537,18 @@ function setupControls() {
   $('#p-half').onclick = preset(0.5);
   $('#p-pot').onclick = preset(1);
   $('#p-all').onclick = () => { const r = $('#raise'); r.value = r.max; $('#raise-val').textContent = r.value; };
+  $('#b-buy').onclick = () => buyFlow(S.buy_in, '#act-err');
+  $('#b-cashsol').onclick = async () => {
+    if (!confirm('Cash out? Your chips go back to the table and the SOL is sent to your wallet in one transaction.')) return;
+    try {
+      const r = await api('/api/cashout_sol', {});
+      saveSession(null);
+      alert(`PAID ${r.sol} SOL TO YOUR WALLET\n${r.explorer_url}`);
+      location.href = location.pathname;
+    } catch (e) { $('#act-err').textContent = String(e.message || e).toUpperCase(); }
+  };
   $('#b-leave').onclick = async () => {
-    if (!confirm('Leave the table and cash out your chips? You will need a new QR code to sit down again.')) return;
+    if (!confirm('Log out? Your chips stay safe in your wallet and are waiting when you scan a seat QR again.')) return;
     try { await api('/api/cashout', {}); saveSession(null); location.href = location.pathname; }
     catch (e) { $('#act-err').textContent = e.message.toUpperCase(); }
   };
@@ -463,10 +557,97 @@ function setupControls() {
 // ---------------------------------------------------------------------------
 // Sit down (opened from a seat's QR code)
 // ---------------------------------------------------------------------------
+let bank = null;
+let solLamports = null;       // this wallet's REAL devnet balance, read straight from devnet (not from the wallet app)
+function solText(chips) {
+  const per = S && S.sol ? S.sol.lamports_per_chip : 10000;
+  const v = (chips * per) / 1e9;
+  return `${(v >= 0.1 ? v.toFixed(2) : v.toFixed(6)).replace(/0+$/, '').replace(/\.$/, '')} SOL`;
+}
+async function refreshBank() {
+  if (!W) return;
+  try { bank = (await api(`/api/bankroll?pubkey=${encodeURIComponent(W.pub)}`)).chips; } catch { /* chain offline */ }
+  try { solLamports = await devnetBalance(W.pub); } catch { /* rpc busy */ }
+  if (S) renderJoin(S);
+}
+async function useWallet(kind, secret) {
+  try {
+    if (kind === 'imported') {
+      W = importedWallet(secret);
+      try { localStorage.setItem('pokervis.sk', b64(W.secret)); localStorage.setItem(WKEY, 'imported'); } catch { /* storage blocked */ }
+    } else {
+      W = await providerWallet(kind.slice(9), false);
+      try { localStorage.setItem(WKEY, kind); } catch { /* storage blocked */ }
+    }
+    $('#join-err').textContent = '';
+    bank = null;
+    refreshBank();
+    if (S) render(S, false);
+  } catch (e) { $('#join-err').textContent = String(e.message || e).toUpperCase(); }
+}
+
+const DEVNET_RPC = 'https://api.devnet.solana.com';
+async function rpcCall(method, params) {
+  const r = await fetch(DEVNET_RPC, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  const j = await r.json();
+  if (j.error) throw new Error(j.error.message);
+  return j.result;
+}
+const devnetBalance = async (pub) => (await rpcCall('getBalance', [pub, { commitment: 'confirmed' }])).value;
+/** Always submit to DEVNET ourselves: the wallet only signs, so a wallet left on mainnet can never send this to the wrong cluster. */
+const sendRaw = (bytes) => rpcCall('sendTransaction', [b64(bytes), { encoding: 'base64', preflightCommitment: 'confirmed' }]);
+const NET_HELP = 'PHANTOM: SETTINGS > DEVELOPER SETTINGS > TESTNET MODE > SOLANA DEVNET';
+/** Pay devnet SOL from the user's own wallet; the server verifies the transaction on chain and only then credits chips. */
+async function buyFlow(chips, errSel) {
+  const err = $(errSel);
+  if (!W) { err.textContent = 'CONNECT A SOLANA WALLET FIRST.'; return; }
+  try {
+    const prep = await api('/api/sol/prepare', { pubkey: W.pub, chips });
+    const web3 = await loadWeb3();
+    const tx = web3.Transaction.from(unb64(prep.tx));
+    err.textContent = 'CHECKING YOUR DEVNET BALANCE…';
+    const have = await devnetBalance(W.pub);
+    solLamports = have;
+    if (have < prep.lamports + 10000) {
+      throw new Error(`ADDRESS ${W.pub} HAS ${have / 1e9} DEVNET SOL, NEEDS ${solText(chips)} PLUS FEES. GET DEVNET SOL FOR THIS ADDRESS AT FAUCET.SOLANA.COM`);
+    }
+    tx.recentBlockhash = (await rpcCall('getLatestBlockhash', [{ commitment: 'confirmed' }])).value.blockhash;   // fresh, straight from devnet
+    let signature;
+    if (W.kind === 'provider') {
+      err.textContent = `APPROVE THE PAYMENT IN ${W.name}…`;
+      const p = W.provider;
+      if (p.signTransaction) {
+        const signed = await p.signTransaction(tx);             // the wallet only signs...
+        signature = await sendRaw(signed.serialize());          // ...and WE send it to devnet
+      } else {
+        ({ signature } = await p.signAndSendTransaction(tx));
+      }
+    } else {
+      err.textContent = 'SIGNING WITH YOUR KEY…';
+      tx.partialSign(web3.Keypair.fromSecretKey(W.secret));
+      signature = await sendRaw(tx.serialize());
+    }
+    err.textContent = 'CONFIRMING ON SOLANA…';
+    const res = await api('/api/sol/confirm', { pubkey: W.pub, signature });
+    if (session) await api('/api/sync', {});
+    err.innerHTML = '';
+    const a = document.createElement('a');
+    a.href = res.explorer_url; a.target = '_blank'; a.rel = 'noopener'; a.className = 'tx-link';
+    a.textContent = `BOUGHT ${res.chips} CHIP · VIEW YOUR TRANSACTION`;
+    err.appendChild(a);
+    await refreshBank();
+  } catch (e) {
+    const m = String(e.message || e);
+    err.textContent = `${m}${/DEVNET SOL/.test(m) ? '' : ' · ' + NET_HELP}`.toUpperCase();
+  }
+}
+
 function setupJoin() {
   $('#join-seat').textContent = SEAT_PARAM || '';
-  $('#join-wallet').textContent = W ? short(W.pub) : 'UNAVAILABLE';
   $('#join-name').value = (() => { try { return localStorage.getItem('pokervis.name') || ''; } catch { return ''; } })();
+  $('#b-import').onclick = () => useWallet('imported', $('#import-key').value);
+  $('#b-switch').onclick = () => { try { localStorage.removeItem(WKEY); } catch { /* */ } saveSession(null); location.reload(); };
+  $('#b-join-buy').onclick = () => buyFlow(S.buy_in, '#join-err');
   $('#b-sit').onclick = async () => {
     $('#join-err').textContent = '';
     try {
@@ -475,14 +656,17 @@ function setupJoin() {
       await signIn(SEAT_PARAM, CODE_PARAM, name);
       history.replaceState(null, '', location.pathname);       // drop the seat code from the address bar
       if (S) render(S, false);
-    } catch (e) { $('#join-err').textContent = e.message.toUpperCase(); }
+    } catch (e) { $('#join-err').textContent = String(e.message || e).toUpperCase(); }
   };
+  refreshBank();
+  setInterval(() => { if (!$('#join').hidden) refreshBank(); }, 8000);
 }
 
 let autoTried = false;
 /** Scanning a seat QR should just work: if this wallet already owns the seat, or it is free and we know the name, sign in. */
 function maybeAutoJoin(S) {
   if (autoTried || !W || meSeat(S) || !(SEAT_PARAM > 0 && CODE_PARAM)) return;
+  if (!bank) return;                                         // no chips yet: the user must pay SOL first
   const seat = S.seats[SEAT_PARAM - 1];
   if (!seat) return;
   const mine = seat.occupied && seat.pubkey === W.pub;
@@ -499,14 +683,46 @@ function renderJoin(S) {
   const show = !meSeat(S) && SEAT_PARAM > 0 && !!CODE_PARAM;
   $('#join').hidden = !show;
   if (!show) return;
-  const seat = S.seats[SEAT_PARAM - 1];
-  if (seat && seat.occupied && !(session && W && seat.pubkey === W.pub)) {
-    $('#join-err').textContent = 'THAT SEAT IS TAKEN. ASK THE DEALER FOR A FRESH QR.';
-    $('#b-sit').disabled = true;
-  } else {
-    $('#b-sit').disabled = S.phase !== 'waiting' && S.phase !== 'done' && !(seat && seat.occupied);
-    if ($('#b-sit').disabled) $('#join-err').textContent = 'A HAND IS IN PROGRESS. YOU CAN SIT DOWN BETWEEN HANDS.';
+  $('#wallet-pick').hidden = !!W;
+  $('#wallet-ready').hidden = !W;
+  if (!W) {
+    const box = $('#provider-btns');
+    const have = availableProviders().map((x) => x.id).join(',');
+    if (box.dataset.have !== have) {                         // one button per wallet found in this browser
+      box.dataset.have = have;
+      box.innerHTML = '';
+      for (const x of availableProviders()) {
+        const bt = document.createElement('button');
+        bt.type = 'button'; bt.className = 'go'; bt.textContent = `CONNECT ${x.name}`;
+        bt.onclick = () => useWallet(`provider:${x.id}`);
+        box.appendChild(bt);
+      }
+      $('#no-provider').hidden = !!have;
+      const here = encodeURIComponent(location.href);
+      $('#dl-phantom').href = `https://phantom.app/ul/browse/${here}?ref=${encodeURIComponent(location.origin)}`;
+      $('#dl-solflare').href = `https://solflare.com/ul/v1/browse/${here}?ref=${encodeURIComponent(location.origin)}`;
+    }
+    return;
   }
+  $('#join-wallet').textContent = short(W.pub);
+  $('#join-kind').textContent = `(${W.name})`;
+  $('#join-bank').textContent = bank == null ? '…' : `${bank} (${solText(bank)})`;
+  const need = S.buy_in * (S.sol ? S.sol.lamports_per_chip : 10000) + 10000;
+  $('#join-sol').textContent = solLamports == null ? '…' : `${(solLamports / 1e9).toFixed(4)} SOL`;
+  const low = solLamports != null && solLamports < need && !bank;
+  $('#join-net').hidden = !low;
+  if (low) $('#join-net').textContent = `THIS ADDRESS HAS TOO LITTLE DEVNET SOL. GET SOL SENT TO ${W.pub} AT FAUCET.SOLANA.COM (DEVNET). THEN IN ${NET_HELP}.`;
+  $('#b-join-buy').textContent = `BUY IN ${S.buy_in} CHIP = ${solText(S.buy_in)}`;
+  const seat = S.seats[SEAT_PARAM - 1];
+  let msg = '';
+  let disabled = false;
+  if (seat && seat.occupied && !(session && seat.pubkey === W.pub)) { msg = 'THAT SEAT IS TAKEN. ASK THE DEALER FOR A FRESH QR.'; disabled = true; }
+  else if (!bank) { msg = 'BUY IN WITH DEVNET SOL TO SIT DOWN.'; disabled = true; }
+  else if (S.phase !== 'waiting' && S.phase !== 'done' && !(seat && seat.occupied)) { msg = 'A HAND IS IN PROGRESS. YOU CAN SIT DOWN BETWEEN HANDS.'; disabled = true; }
+  $('#b-sit').disabled = disabled;
+  const cur = $('#join-err').textContent;
+  if (msg) $('#join-err').textContent = msg;
+  else if (/TAKEN|IN PROGRESS|BUY IN WITH/.test(cur)) $('#join-err').textContent = '';
 }
 
 // ---------------------------------------------------------------------------
@@ -528,6 +744,10 @@ function render(state, animate) {
   setPill('#net-status', 'live', S.mode === 'mock' ? 'MOCK' : 'LIVE');
   const camOk = S.vision && S.vision.age != null && S.vision.age < 5;
   setPill('#cam-status', camOk ? 'live' : S.manual_mode ? 'demo' : 'error', camOk ? 'LIVE' : S.manual_mode ? 'MANUAL' : 'OFFLINE');
+  if (DEALER) {
+    $('#cam-panel').classList.toggle('live', !!camOk);
+    $('#cam-state').textContent = camOk ? 'LIVE' : 'WAITING FOR THE PHONE';
+  }
 
   if (S.hand_id && S.hand_id !== lastHandBanner && S.phase !== 'waiting') {   // once per real hand, never for a failed start
     if (old && animate) banner('NEW HAND');
@@ -560,6 +780,7 @@ function render(state, animate) {
   renderPot(S);
   renderStatus(S);
   renderStart(S);
+  renderFeed(S);
   renderControls(S);
   renderJoin(S);
 }
@@ -604,13 +825,31 @@ async function fetchQr(n) {
   qrUrls[n] = '';
   try { qrUrls[n] = await dblob(`/api/dealer/seat_qr/${n}.png`); if (S) renderSeats(S); } catch { delete qrUrls[n]; }
 }
-function showDealerLogin() { $('#dealer-login').hidden = false; $('#dealer-tools').hidden = true; $('#qr-btn').hidden = true; }
+function showDealerLogin() { $('#dealer-login').hidden = false; $('#dealer-tools').hidden = true; $('#qr-btn').hidden = true; $('#cam-panel').hidden = true; }
+
+/** The camera-phone QR + plain link, always on the dealer page. Re-fetched every 20 s so it can never go stale. */
+async function loadCamQr() {
+  if (!dealerToken) return;
+  try {
+    const r = await fetch('/api/dealer/cam_qr.png', { headers: { Authorization: `Bearer ${dealerToken}` } });
+    if (r.status === 401) { dealerToken = null; try { localStorage.removeItem('pokervis.dealer'); } catch { /* */ } showDealerLogin(); return; }
+    if (!r.ok) throw new Error(String(r.status));
+    const url = r.headers.get('x-join-url') || '';
+    const img = $('#cam-qr-main');
+    const blob = URL.createObjectURL(await r.blob());
+    if (img.dataset.url !== url) { img.src = blob; img.dataset.url = url; }
+    $('#cam-url').textContent = url; $('#cam-url').href = url;
+    $('#cam-panel').dataset.url = url;
+  } catch { $('#cam-url').textContent = 'COULD NOT LOAD THE CAMERA LINK. IS THE SERVER RUNNING?'; }
+}
+
 
 /** Every seat's QR (occupied or not) so anyone can sign back in after a device problem. */
 async function openQrDialog() {
   const dlg = $('#qr-dialog');
   const grid = $('#qr-grid');
   grid.innerHTML = '';
+  dblob('/api/dealer/cam_qr.png').then((u) => { $('#cam-qr').src = u; }).catch(() => { $('#cam-qr').alt = 'could not load'; });
   const seats = S ? S.seats : [1, 2, 3, 4].map((n) => ({ seat: n, occupied: false }));
   for (const seat of seats) {
     const fig = document.createElement('figure');
@@ -621,25 +860,58 @@ async function openQrDialog() {
   if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
 }
 
+/** PLAYERS list in the tools drawer: one KICK button per seated player. */
+let kickSig = '';
+function renderKick() {
+  const box = $('#kick-list');
+  if (!box || !S) return;
+  const seated = S.seats.filter((x) => x.occupied);
+  const sig = seated.map((x) => `${x.seat}:${x.name}`).join('|');
+  if (sig === kickSig) return;
+  kickSig = sig;
+  box.innerHTML = '';
+  if (!seated.length) { box.textContent = 'NOBODY SEATED'; return; }
+  for (const seat of seated) {
+    const row = document.createElement('div');
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'danger'; b.textContent = `KICK SEAT ${seat.seat}: ${String(seat.name).toUpperCase()}`;
+    b.onclick = async () => {
+      $('#t-err').textContent = '';
+      if (!confirm(`Kick ${seat.name} from seat ${seat.seat}? Any hand in progress is cancelled (no chips lost) and their chips go back to their wallet.`)) return;
+      try { await dapi('/api/dealer/kick', { seat: seat.seat }); } catch (e) { $('#t-err').textContent = e.message.toUpperCase(); }
+    };
+    row.appendChild(b);
+    box.appendChild(row);
+  }
+}
+
 let camBlob = '';
+/** Live picture: fetch the next frame the moment the last one arrived (about 8-10 fps), only while the drawer is open. */
+async function liveView() {
+  for (;;) {
+    if (!dealerToken || !$('#dealer-tools').open) { await new Promise((r) => setTimeout(r, 300)); continue; }
+    const u = await dblob('/api/vision/frame.jpg').catch(() => '');
+    if (u) { $('#cam-img').src = u; if (camBlob) URL.revokeObjectURL(camBlob); camBlob = u; }
+    await new Promise((r) => setTimeout(r, u ? 60 : 500));
+  }
+}
 async function dealerPoll() {
   if (!dealerToken) return;
   try {
     const d = await dapi('/api/dealer/state');
+    renderKick();
     const reads = Object.entries(d.readings || {}).sort().map(([z, r]) => `${z}: ${cardLabel(r.code)} ${Math.round(r.conf * 100)}%${r.stable ? '' : ' (UNSTABLE)'}`);
     $('#cam-reads').textContent = reads.length ? `READS ${reads.join(' · ')}` : 'READS NO CARDS';
-    if ($('#dealer-tools').open) {
-      const u = await dblob('/api/vision/frame.jpg').catch(() => '');
-      if (u) { $('#cam-img').src = u; if (camBlob) URL.revokeObjectURL(camBlob); camBlob = u; }
-    }
   } catch { /* transient */ }
 }
 
+let liveStarted = false;
 function setupDealer() {
   if (!DEALER) return;
   $('#join').hidden = true;
-  const start = () => { $('#dealer-login').hidden = true; $('#dealer-tools').hidden = false; $('#qr-btn').hidden = false; dealerPoll(); setInterval(dealerPoll, 1500); };
+  const start = () => { $('#dealer-login').hidden = true; $('#dealer-tools').hidden = false; $('#qr-btn').hidden = false; $('#cam-panel').hidden = false; loadCamQr(); setInterval(loadCamQr, 20000); dealerPoll(); setInterval(dealerPoll, 1500); if (!liveStarted) { liveStarted = true; liveView(); } };
   $('#qr-btn').onclick = openQrDialog;
+  $('#cam-copy').onclick = async () => { try { await navigator.clipboard.writeText($('#cam-panel').dataset.url || ''); $('#cam-copy').textContent = 'COPIED'; } catch { $('#cam-copy').textContent = 'SELECT THE LINK ABOVE'; } setTimeout(() => { $('#cam-copy').textContent = 'COPY LINK'; }, 2000); };
   $('#qr-close').onclick = () => { const d = $('#qr-dialog'); if (d.close) d.close(); else d.removeAttribute('open'); };
   $('#d-go').onclick = async () => {
     $('#d-err').textContent = '';
@@ -666,7 +938,79 @@ function setupDealer() {
   if (dealerToken) start(); else showDealerLogin();
 }
 
+// ---------------------------------------------------------------------------
+// My wallet & stats: balance after every hand (x = hands played, y = CHIP), from the Postgres ledger
+// ---------------------------------------------------------------------------
+function chartSvg(series) {
+  if (series.length < 2) return '<div class="empty">PLAY A HAND TO START YOUR CHART</div>';
+  const Wd = 520, Ht = 200, L = 46, R = 12, T = 12, B = 26;
+  const ys = series.map((p) => p.balance);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.12; lo = Math.max(0, lo - pad); hi += pad;
+  const n = series.length - 1;
+  const X = (i) => L + (i / n) * (Wd - L - R);
+  const Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (Ht - T - B);
+  const pts = series.map((p, i) => `${X(i).toFixed(1)},${Y(p.balance).toFixed(1)}`);
+  const base = Y(series[0].balance);
+  const grid = [0, 0.5, 1].map((f) => { const v = lo + f * (hi - lo); return `<line x1="${L}" x2="${Wd - R}" y1="${Y(v)}" y2="${Y(v)}" stroke="#3a3260" stroke-dasharray="3 4"/><text x="${L - 6}" y="${Y(v) + 4}" text-anchor="end" fill="#8a83b0" font-size="13">${Math.round(v)}</text>`; }).join('');
+  const dots = series.slice(1).map((p, i) => `<rect x="${X(i + 1) - 3}" y="${Y(p.balance) - 3}" width="6" height="6" fill="${p.won ? '#14f195' : '#ff7b84'}"><title>Hand ${i + 1}: ${p.delta > 0 ? '+' : ''}${p.delta} → ${p.balance}${p.handName ? ' · ' + p.handName : ''}</title></rect>`).join('');
+  return `<svg viewBox="0 0 ${Wd} ${Ht}" font-family="VT323, monospace">${grid}
+    <line x1="${L}" x2="${Wd - R}" y1="${base}" y2="${base}" stroke="#ffc93c" stroke-opacity=".35"/>
+    <polyline points="${pts.join(' ')}" fill="none" stroke="#9945ff" stroke-width="3" stroke-linejoin="round"/>${dots}
+    <text x="${L}" y="${Ht - 6}" fill="#8a83b0" font-size="13">HAND 0</text><text x="${Wd - R}" y="${Ht - 6}" text-anchor="end" fill="#8a83b0" font-size="13">HAND ${n}</text></svg>`;
+}
+
+async function openStats() {
+  const dlg = $('#stats-dialog');
+  if (!W) return;
+  $('#st-wallet').textContent = short(W.pub) + ` (${W.name})`;
+  document.querySelector('.wallet-tools').hidden = W.kind !== 'imported';
+  $('#st-err').textContent = '';
+  if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', '');
+  $('#st-chart').innerHTML = '<div class="empty">LOADING…</div>';
+  try {
+    const h = await api(`/api/history?pubkey=${encodeURIComponent(W.pub)}`);
+    const st = h.stats;
+    const live = S && S.seats.find((x) => x.occupied && x.pubkey === W.pub);
+    const bal = live ? live.stack : st.balance;
+    const tile = (v, label, cls = '') => `<div><b class="${cls}">${v}</b><small>${label}</small></div>`;
+    $('#st-tiles').innerHTML = tile(bal ?? '—', 'CHIPS') + tile(st.hands, 'HANDS') +
+      tile(st.hands ? Math.round((100 * st.wins) / st.hands) + '%' : '—', 'WIN RATE') +
+      tile((st.net > 0 ? '+' : '') + st.net, 'NET', st.net < 0 ? 'neg' : '');
+    $('#st-chart').innerHTML = chartSvg(h.series);
+    $('#st-note').textContent = !h.enabled ? 'HISTORY DATABASE IS OFF.' : h.error ? h.error.toUpperCase() : 'EACH SQUARE IS A HAND. GREEN = WON. ALL PAYOUTS ARE ON SOLANA DEVNET.';
+    $('#st-list').innerHTML = h.recent.map((e) => {
+      const label = e.kind === 'faucet' ? 'FREE CHIP GRANT' : e.kind === 'deposit' ? 'SOL BUY-IN' : e.kind === 'cashout' ? 'SOL CASH-OUT' : (e.won ? 'WON' : 'LOST') + (e.handName ? ' · ' + e.handName : '');
+      const amt = `<span class="${e.delta >= 0 ? 'pos' : 'neg'}">${e.delta > 0 ? '+' : ''}${e.delta}</span>`;
+      const row = `<span>${label.toUpperCase()}</span>${amt}<span>${e.balance}</span>`;
+      return e.explorerUrl && e.signature && !e.signature.startsWith('mock') ? `<a href="${e.explorerUrl}" target="_blank" rel="noopener">${row}</a>` : `<div>${row}</div>`;
+    }).join('') || '<div>NO HANDS YET</div>';
+  } catch (e) { $('#st-chart').innerHTML = `<div class="empty">${String(e.message).toUpperCase()}</div>`; }
+}
+
+function setupStats() {
+  document.querySelectorAll('.stats-open').forEach((b) => { b.onclick = openStats; });
+  $('#st-close').onclick = () => { const d = $('#stats-dialog'); if (d.close) d.close(); else d.removeAttribute('open'); };
+  $('#st-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(localStorage.getItem('pokervis.sk') || ''); $('#st-err').textContent = 'COPIED. KEEP IT PRIVATE.'; }
+    catch { $('#st-err').textContent = 'COPY BLOCKED BY THIS BROWSER.'; }
+  };
+  $('#st-restore').onclick = () => {
+    try {
+      const raw = $('#st-key').value.trim();
+      const kp = nacl.sign.keyPair.fromSecretKey(unb64(raw));         // throws on a bad key
+      if (S && S.seats.some((x) => x.occupied && x.pubkey === W.pub)) { $('#st-err').textContent = 'LOG OUT FIRST.'; return; }
+      localStorage.setItem('pokervis.sk', raw);
+      saveSession(null);
+      $('#st-err').textContent = 'RESTORED ' + short(b58(kp.publicKey)) + ' · RELOADING';
+      setTimeout(() => location.reload(), 600);
+    } catch { $('#st-err').textContent = 'THAT IS NOT A VALID WALLET KEY.'; }
+  };
+}
+
 spinCoin($('#logo-coin'), 10, 8);
+setupStats();
 setupDealer();
 setupBadges();
 setupControls();

@@ -100,6 +100,30 @@ def test_motion_and_low_conf_block_stability():
     assert t2.message()["zones"]["B1"]["stable"] is False
 
 
+def test_card_across_two_areas_counts_once_and_board_wins():
+    t = CardTracker()
+    feed_cards(t, 4, BOARD=[("4c", .74, (1, 1))], S1=[("4c", .79, (9, 1)), ("3d", .79, (9, 5))])
+    m = t.message()
+    assert m["zones"]["B1"]["code"] == "4c" and m["zones"]["1a"]["code"] == "3d" and "1b" not in m["zones"]
+    assert any("4c" in w for w in m["warnings"])
+
+
+def test_unstable_reading_does_not_steal_a_card_from_a_stable_area():
+    t = CardTracker()
+    feed_cards(t, 4, S1=[("4c", .79, (9, 1))])
+    t.update({"BOARD": [("4c", .3, (1, 1))]})
+    z = t.message()["zones"]
+    assert z["1a"]["code"] == "4c" and "B1" not in z
+
+
+def test_message_carries_the_box_of_each_card_and_forget_clears_an_area():
+    t = CardTracker()
+    feed_cards(t, 4, S2=[("As", .8, (5, 5), (1, 2, 3, 4))])
+    assert t.message()["zones"]["2a"]["box"] == (1, 2, 3, 4)
+    t.forget("S2")
+    assert t.message()["zones"] == {}
+
+
 def test_motion_does_not_make_already_stable_cards_vanish_but_blocks_new_ones():
     t = CardTracker()
     feed_cards(t, 4, BOARD=[("As", .8, (1, 1))])

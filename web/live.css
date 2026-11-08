@@ -198,3 +198,49 @@ main { gap: 14px; }
 
 /* seat labels under a QR stay readable */
 .mode-dealer .seat.empty-seat .name { color: var(--cream); }
+
+/* dealer: camera QR in the QR dialog, kick list */
+.cam-qr { margin: 0 0 12px; text-align: center; }
+.cam-qr figcaption { font-family: var(--px); font-size: 8px; line-height: 1.7; margin-top: 6px; color: var(--cream); }
+.cam-qr figcaption small { display: block; color: #8a83b0; font-size: 7px; }
+.cam-qr img { width: auto; height: auto; max-width: 100%; image-rendering: pixelated; background: #fff; padding: 8px; }
+#kick-list > div { margin: 6px 0; }
+
+/* payout link, stats dialog + chart */
+.tx-link { display: inline-block; margin-top: 8px; font-family: var(--px); font-size: 9px; color: var(--teal); }
+#stats-dialog { border: 0; padding: 20px; width: min(560px, calc(100vw - 24px)); max-height: 92vh; background: #1b1630; color: var(--cream); }
+#stats-dialog::backdrop { background: rgba(5, 3, 15, 0.8); }
+#stats-dialog h2 { font-family: var(--px); font-size: 13px; color: var(--gold); margin: 0 0 10px; }
+#stats-dialog h3 { font-family: var(--px); font-size: 9px; color: var(--gold); margin: 14px 0 6px; }
+#stats-dialog button { width: 100%; margin-top: 8px; min-height: 44px; }
+#stats-dialog input { width: 100%; margin-top: 8px; padding: 10px; background: #0d0b1a; color: var(--cream); border: 2px solid #3a3260; font: inherit; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 8px 0; }
+.tiles div { background: #0d0b1a; border: 2px solid #3a3260; padding: 8px 4px; text-align: center; }
+.tiles b { display: block; font-family: var(--px); font-size: 12px; color: var(--teal); margin-bottom: 4px; }
+.tiles b.neg { color: #ff7b84; }
+.tiles small { color: #8a83b0; font-size: 15px; }
+.chart { background: #0d0b1a; border: 2px solid #3a3260; min-height: 190px; }
+.chart svg { display: block; width: 100%; height: auto; }
+.chart .empty { padding: 70px 10px; text-align: center; color: #8a83b0; }
+.hist { max-height: 190px; overflow: auto; }
+.hist a, .hist div { display: flex; justify-content: space-between; gap: 8px; padding: 5px 4px; border-bottom: 1px solid #2a2450; color: var(--cream); text-decoration: none; }
+.hist .pos { color: var(--teal); } .hist .neg { color: #ff7b84; }
+.wallet-tools { margin-top: 12px; }
+.wallet-tools summary { cursor: pointer; font-family: var(--px); font-size: 9px; color: #8a83b0; }
+
+/* wallet picker + live feed */
+#provider-btns { display: grid; gap: 8px; margin: 8px 0; }
+#join a.btn { display: block; margin: 6px 0; text-align: center; }
+#join input#import-key { width: 100%; margin-top: 8px; padding: 10px; background: #0d0b1a; color: var(--cream); border: 2px solid #3a3260; font: inherit; }
+.feed h2 a { font-size: 9px; color: var(--teal); margin-left: 8px; }
+.feed .hist { max-height: 230px; }
+.feed .hist a { display: grid; grid-template-columns: 1fr auto auto; }
+
+/* camera panel (dealer) */
+#cam-panel h2 span { font-size: 9px; margin-left: 8px; color: #ff7b84; }
+#cam-panel.live h2 span { color: var(--teal); }
+#cam-panel .cam-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+#cam-panel.live .cam-row { display: none; }
+#cam-qr-main { width: auto; height: auto; max-width: 100%; background: #fff; padding: 8px; image-rendering: pixelated; }
+#cam-url { display: block; word-break: break-all; color: var(--teal); margin: 6px 0; font-size: 18px; }
+#cam-copy { min-height: 44px; }

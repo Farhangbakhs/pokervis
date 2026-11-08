@@ -12,6 +12,12 @@ def test_validate_accepts_defaults_and_rejects_bad():
             areas.validate(bad)
 
 
+def test_boxes_sliced_by_the_area_boundary_are_detected():
+    assert areas.touches_edge((0, 50, 17, 70), 300, 900)          # left edge
+    assert areas.touches_edge((280, 50, 299, 70), 300, 900)       # right edge
+    assert not areas.touches_edge((100, 50, 140, 70), 300, 900)
+
+
 def test_crop_and_labels_and_save_roundtrip(tmp_path):
     f = np.zeros((200, 100, 3), np.uint8)
     c, (x0, y0) = areas.crop(f, [0.5, 0.25, 1.0, 0.75])

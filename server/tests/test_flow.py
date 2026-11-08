@@ -32,7 +32,19 @@ def env():
     return c, app.state.table, chain, {"Authorization": f"Bearer {tok}"}
 
 
+_deposits = iter(range(1, 10_000))
+
+
+def fund(c, table, p, chips: int = 1000):
+    """The wallet pays the table SOL (mock chain: a signature 'mock-<chips>-<n>' is a verified payment)."""
+    r = c.post("/api/sol/confirm", json={"pubkey": p.pub, "signature": f"mock-{chips}-{next(_deposits)}"})
+    assert r.status_code == 200, r.text
+    return r
+
+
 def sign_in(c, table, p: Player, seat: int, code: str | None = None, sign_with=None):
+    if table.chain.balance(p.pub) == 0:
+        fund(c, table, p)
     ch = c.post("/api/auth/challenge", json={"pubkey": p.pub}).json()
     sig = (sign_with or p.sk).sign(ch["message"].encode()).signature
     r = c.post("/api/auth/login", json={
@@ -62,6 +74,12 @@ def check_down(c, table, players):
 def test_sign_in_security(env):
     c, table, chain, _ = env
     a, b = Player("A"), Player("B")
+    nobody = Player("Nobody")                                                   # no SOL paid -> cannot sit, ever
+    ch0 = c.post("/api/auth/challenge", json={"pubkey": nobody.pub}).json()
+    sig0 = base64.b64encode(nobody.sk.sign(ch0["message"].encode()).signature).decode()
+    r0 = c.post("/api/auth/login", json={"pubkey": nobody.pub, "nonce": ch0["nonce"], "signature": sig0, "seat": 1,
+                                         "seat_code": table.seat_codes[1], "name": "N"})
+    assert r0.status_code == 400 and "Buy in" in r0.json()["detail"] and not table.engine.players
     assert sign_in(c, table, a, 1, code="wrong").status_code == 400            # bad seat code
     assert sign_in(c, table, a, 1, sign_with=SigningKey.generate()).status_code == 401   # signed by someone else
     ch = c.post("/api/auth/challenge", json={"pubkey": a.pub}).json()
@@ -473,6 +491,7 @@ def test_seat_codes_are_permanent_and_the_roster_survives_a_server_restart(tmp_p
     t1 = Table(chain, state_path=path)
     t1.restore()
     codes = dict(t1.seat_codes)
+    chain._credit("A" * 43 + "1", 1000); chain._credit("B" * 43 + "2", 1000)
     t1.join(1, "Alice", "A" * 43 + "1")
     t1.join(2, "Bob", "B" * 43 + "2")
     t1.start_hand()                                                        # a running hand is not persisted...
@@ -598,28 +617,60 @@ def test_a_failing_start_refuses_cleanly_without_burning_hand_ids(env, monkeypat
     assert (table.hand_key, table.engine.hand_id) == before and table.phase == "waiting"
 
 
-def test_buying_in_between_rounds_tops_a_short_stack_up_to_the_buy_in(env):
-    from server.table import TableError
+def test_bankroll_is_kept_between_visits_and_more_chips_only_come_from_a_new_sol_payment(env):
     c, table, chain, dh = env
     a, b = Player("Alice"), Player("Bob")
     sign_in(c, table, a, 1)
     sign_in(c, table, b, 2)
-    with __import__("pytest").raises(TableError):
-        table.rebuy(1)                                                      # already a full stack
-    chain.bal[a.pub] -= 300                                                 # Alice lost 300 in earlier rounds
-    table.engine.players[1].stack -= 300
-    assert c.post("/api/rebuy", headers=hdr(a)).status_code == 200
-    assert table.engine.players[1].stack == table.buy_in and chain.bal[a.pub] == table.buy_in
-    c.post("/api/dealer/start_round", headers=dh)
-    assert c.post("/api/rebuy", headers=hdr(a)).status_code == 400          # not mid-round
+    assert not hasattr(table, "rebuy")                                          # no free refill exists
+    chain.bal[a.pub] += 300                                                     # Alice wins 300 (on chain)
+    table.engine.players[1].stack += 300
+    assert c.post("/api/cashout", headers=hdr(a)).status_code == 200            # log out: chips stay in the bankroll
+    assert chain.bal[a.pub] == table.buy_in + 300
+    sign_in(c, table, a, 1)
+    assert table.engine.players[1].stack == table.buy_in + 300                  # same stack, no new chips minted
+    fund(c, table, a, 500)                                                      # buying more = a new verified SOL payment
+    assert table.engine.players[1].stack == table.buy_in + 800
+    assert c.post("/api/rebuy", headers=hdr(a)).status_code in (404, 405)
 
 
-def test_a_busted_player_keeps_their_seat_across_a_restart_and_can_top_up(tmp_path):
+def test_hands_and_grants_are_recorded_for_the_database_and_history_endpoint_is_safe(env):
+    c, table, chain, dh = env
+    calls = {"hand": [], "entry": [], "player": []}
+
+    class FakeDb:
+        enabled = True
+        def upsert_player(self, *a): calls["player"].append(a)
+        def record_entry(self, *a): calls["entry"].append(a)
+        def record_hand(self, *a): calls["hand"].append(a)
+        def history(self, pk): return {"enabled": True, "stats": {}, "series": [], "recent": []}
+
+    table.db = FakeDb()
+    a, b = Player("Alice"), Player("Bob")
+    sign_in(c, table, a, 1)
+    sign_in(c, table, b, 2)
+    assert [e[2] for e in calls["entry"]] == ["deposit", "deposit"]            # both buy-ins recorded, nothing else
+    assert c.post("/api/dealer/start_hand", headers=dh).status_code == 200
+    seat = table.engine.to_act
+    folder = a if seat == 1 else b
+    assert c.post("/api/action", json={"type": "fold"}, headers=hdr(folder)).status_code == 200
+    assert len(calls["hand"]) == 1
+    hand_id, pot, board, sh, sig, url, rows = calls["hand"][0]
+    assert sorted(r["delta"] for r in rows) == [-5, 5] or sorted(r["delta"] for r in rows) == [-10, 10]
+    assert sum(r["delta"] for r in rows) == 0 and {r["pubkey"] for r in rows} == {a.pub, b.pub}
+    assert sum(1 for r in rows if r["won"]) == 1
+    assert c.get("/api/history", params={"pubkey": a.pub}).status_code == 200
+    assert c.get("/api/history", params={"pubkey": "nope"}).status_code == 400
+
+
+def test_a_busted_player_keeps_their_seat_across_a_restart_and_buys_more_with_sol(tmp_path):
     from server.table import Table
     chain = MockChain()
     path = tmp_path / "table_state.json"
     t1 = Table(chain, state_path=path)
     t1.restore()
+    chain._credit("A" * 43 + "1", 1000)
+    chain._credit("B" * 43 + "2", 1000)
     t1.join(1, "Alice", "A" * 43 + "1")
     t1.join(2, "Bob", "B" * 43 + "2")
     chain.bal["A" * 43 + "1"] = 0                                          # Alice lost everything
@@ -628,5 +679,41 @@ def test_a_busted_player_keeps_their_seat_across_a_restart_and_can_top_up(tmp_pa
     t2 = Table(chain, state_path=path)
     t2.restore()
     assert t2.engine.players[1].stack == 0 and t2.engine.players[1].name == "Alice"   # still seated after the restart
-    t2.rebuy(1)                                                            # and can simply buy back in
-    assert t2.engine.players[1].stack == t2.buy_in
+    t2.confirm_buyin("A" * 43 + "1", "mock-1000-77")                         # and buys back in with a real payment
+    assert t2.engine.players[1].stack == 1000
+
+
+def test_dealer_can_kick_a_player_mid_hand_and_chips_go_back(env):
+    c, table, chain, dh = env
+    a, b = Player("A"), Player("B")
+    sign_in(c, table, a, 1)
+    sign_in(c, table, b, 2)
+    assert c.post("/api/dealer/start_hand", headers=dh).status_code == 200
+    old_code = table.seat_codes[2]
+    assert c.post("/api/dealer/kick", json={"seat": 2}, headers=hdr(a)).status_code == 403    # players cannot kick
+    assert c.post("/api/dealer/kick", json={"seat": 2}, headers=dh).status_code == 200
+    assert 2 not in table.engine.players and not table.engine.in_hand
+    assert table.engine.players[1].stack == table.buy_in                                     # nobody lost chips
+    assert table.seat_codes[2] != old_code                                                    # old QR no longer sits down
+    assert c.post("/api/dealer/kick", json={"seat": 2}, headers=dh).status_code in (400, 404, 409)  # empty seat
+
+
+def test_dealer_gets_a_camera_qr(env):
+    c, _, _, dh = env
+    r = c.get("/api/dealer/cam_qr.png", headers=dh)
+    assert r.status_code == 200 and r.content[:4] == b"\x89PNG" and r.headers["x-join-url"].endswith("/cam")
+    assert c.get("/api/dealer/cam_qr.png").status_code in (401, 403)
+
+
+def test_only_a_wallet_that_paid_sol_can_sit_and_cashing_out_pays_sol_back(env):
+    c, table, chain, dh = env
+    w = Player("Wallet")
+    assert c.post("/api/sol/prepare", json={"pubkey": w.pub, "chips": 500}).json()["lamports"] == 500 * 10_000
+    assert c.post("/api/sol/confirm", json={"pubkey": w.pub, "signature": "garbage"}).status_code == 400   # not a payment
+    assert c.post("/api/sol/confirm", json={"pubkey": w.pub, "signature": "mock-500-1"}).json()["balance"] == 500
+    assert c.post("/api/sol/confirm", json={"pubkey": w.pub, "signature": "mock-500-1"}).json()["balance"] == 500   # replay: no double credit
+    assert sign_in(c, table, w, 1).status_code == 200
+    assert table.engine.players[1].stack == 500
+    r = c.post("/api/cashout_sol", headers=hdr(w))
+    assert r.status_code == 200 and r.json()["lamports"] == 500 * 10_000
+    assert 1 not in table.engine.players and chain.bal[w.pub] == 0

@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from server import config
 from server.auth import Auth, AuthError
 from server.chain_client import Chain, HttpChain, MockChain
+from server.db import make_db
 from server.table import Table, TableError
 
 STATIC = Path(__file__).with_name("static")
@@ -67,6 +68,10 @@ class CardsBody(BaseModel):
 
 class ShowdownBody(BaseModel):
     reveal: dict[int, str] | None = None
+
+
+class KickBody(BaseModel):
+    seat: int
 
 
 class OverrideBody(BaseModel):
@@ -126,7 +131,8 @@ def create_app(chain: Chain | None = None, session_secret: str | None = None, de
     pin = dealer_pin or config.get("DEALER_PIN")
     table = Table(chain or make_chain(), buy_in=int(config.get("BUY_IN", "1000")),
                   min_conf=float(config.get("AUTO_MIN_CONF", "0.35")),
-                  state_path=(ROOT_DIR / "data" / "table_state.json") if persist else None)
+                  state_path=(ROOT_DIR / "data" / "table_state.json") if persist else None,
+                  db=make_db(os.environ.get("DATABASE_URL") if persist else None), settle_async=persist)
     table.restore()
     limiter = Limiter()
     pin_fail: dict[str, deque] = defaultdict(deque)
@@ -221,13 +227,58 @@ def create_app(chain: Chain | None = None, session_secret: str | None = None, de
         # the seat comes from the signed token, never from the request body
         return guarded(lambda: (table.act(c["seat"], b.type, b.amount), {"ok": True})[1])
 
+    @app.get("/api/history")
+    def history(pubkey: str, req: Request):
+        """Past performance for a wallet: stats, balance-per-turn series and recent chip movements (public data)."""
+        limiter.check("history", client(req), 60)
+        from server.auth import decode_pubkey
+        try:
+            decode_pubkey(pubkey)
+        except AuthError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            return table.db.history(pubkey)
+        except Exception:  # noqa: BLE001 - a sick database must not break the page
+            return {"enabled": True, "stats": {"hands": 0, "wins": 0, "net": 0, "best": 0, "balance": None},
+                    "series": [], "recent": [], "error": "history unavailable"}
+
+    # ---------- real devnet SOL: the wallet pays the table to buy chips, and is paid SOL back when it cashes out ----------
+    @app.post("/api/sol/prepare")
+    def sol_prepare(body: dict, req: Request):
+        """Unsigned buy-in transaction (player -> house) for the player's own wallet to sign."""
+        limiter.check("sol", client(req), 30)
+        return guarded(lambda: table.prepare_buyin(str(body.get("pubkey", "")), int(body.get("chips", 0) or 0)))
+
+    @app.post("/api/sol/confirm")
+    def sol_confirm(body: dict, req: Request):
+        """Proof of payment is the on-chain transaction itself, so no login is needed: chips go to the payer's bankroll."""
+        limiter.check("sol", client(req), 30)
+        return guarded(lambda: table.confirm_buyin(str(body.get("pubkey", "")), str(body.get("signature", ""))))
+
+    @app.get("/api/bankroll")
+    def bankroll(pubkey: str, req: Request):
+        """Chips this wallet holds on chain (public data): lets the join screen show the bankroll before sitting."""
+        limiter.check("bankroll", client(req), 60)
+        from server.auth import decode_pubkey
+        try:
+            decode_pubkey(pubkey)
+            return {"chips": int(table.chain.balance(pubkey))}
+        except AuthError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(503, "chain unavailable") from e
+
+    @app.post("/api/sync")
+    def sync(c: dict = Depends(player)):
+        return guarded(lambda: table.sync_stack(c["seat"]))
+
+    @app.post("/api/cashout_sol")
+    def cashout_sol(c: dict = Depends(player)):
+        return guarded(lambda: table.cash_out_sol(c["seat"]))
+
     @app.post("/api/cashout")
     def cashout(c: dict = Depends(player)):
         return guarded(lambda: table.cash_out(c["seat"]))
-
-    @app.post("/api/rebuy")
-    def rebuy(c: dict = Depends(player)):
-        return guarded(lambda: table.rebuy(c["seat"]))
 
     # ---------- dealer ----------
     @app.post("/api/dealer/login")
@@ -267,6 +318,10 @@ def create_app(chain: Chain | None = None, session_secret: str | None = None, de
     def abort_hand(_: dict = Depends(dealer)):
         return guarded(lambda: (table.abort_hand(), {"ok": True})[1])
 
+    @app.post("/api/dealer/kick")
+    def kick(b: KickBody, _: dict = Depends(dealer)):
+        return guarded(lambda: table.kick(b.seat))
+
     @app.post("/api/dealer/next_hand")
     def next_hand(_: dict = Depends(dealer)):
         return guarded(lambda: (table.next_hand(), {"ok": True})[1])
@@ -288,6 +343,7 @@ def create_app(chain: Chain | None = None, session_secret: str | None = None, de
 
     # ---------- vision + phone camera (all dealer-token protected) ----------
     app.state.cam = {"jpg": b"", "ts": 0.0}
+    app.state.cam_seq = 0.0
     app.state.vframe = {"jpg": b"", "ts": 0.0}
     MAX_JPG = 4_000_000
 
@@ -316,16 +372,43 @@ def create_app(chain: Chain | None = None, session_secret: str | None = None, de
 
     @app.post("/api/cam/frame")
     async def cam_frame_put(req: Request, _: dict = Depends(dealer)):
-        app.state.cam = {"jpg": await read_jpeg(req), "ts": time.time()}
+        jpg = await read_jpeg(req)
+        seq = float(req.headers.get("x-seq", "0") or 0)
+        if seq and seq < app.state.cam_seq:                      # an older upload overtaken by a newer one: drop it
+            return {"ok": True, "dropped": True}
+        app.state.cam_seq = seq
+        app.state.cam = {"jpg": jpg, "ts": time.time()}
         return {"ok": True}
 
     @app.get("/api/cam/latest.jpg")
-    def cam_frame_get(_: dict = Depends(dealer)):
+    async def cam_frame_get(after: float = 0.0, _: dict = Depends(dealer)):
+        """Latest phone frame. With ?after=<ts> it waits (up to 1 s) for a NEWER frame, so the reader gets frames
+        the instant they arrive instead of polling on a timer. 204 = nothing newer yet."""
         from fastapi.responses import Response
-        if not app.state.cam["jpg"]:
-            raise HTTPException(404, "no camera frame yet")
+        deadline = time.time() + 1.0
+        while not app.state.cam["jpg"] or (after and app.state.cam["ts"] <= after):
+            if time.time() > deadline:
+                if not app.state.cam["jpg"]:
+                    raise HTTPException(404, "no camera frame yet")
+                return Response(status_code=204)
+            await asyncio.sleep(0.01)
         return Response(app.state.cam["jpg"], media_type="image/jpeg",
                         headers={"x-frame-ts": str(app.state.cam["ts"]), "Cache-Control": "no-store"})
+
+    @app.get("/api/dealer/cam_qr.png")
+    def cam_qr(req: Request, _: dict = Depends(dealer)):
+        """QR that opens the camera page (/cam) on the phone that will read the cards."""
+        import io
+
+        import qrcode
+        from fastapi.responses import Response
+        url = f"{public_base(req)}/cam"
+        buf = io.BytesIO()
+        qr = qrcode.QRCode(box_size=6, border=4)             # ~250 px: shown at natural size, no scaling blur
+        qr.add_data(url)
+        qr.make(fit=True)
+        qr.make_image().save(buf, format="PNG")
+        return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "no-store", "x-join-url": url})
 
     @app.get("/api/vision/areas")
     def areas_get(_: dict = Depends(dealer)):

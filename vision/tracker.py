@@ -73,20 +73,26 @@ class CardTracker:
     def clear(self) -> None:
         self.buf.clear()
 
-    def update(self, per_area: dict[str, list[tuple[str, float, tuple[float, float]]]],
-               axis: dict[str, int] | None = None) -> None:
-        """per_area: area -> [(code, conf, (x, y)), ...] for this pass (areas with no cards = [])."""
+    def forget(self, area: str) -> None:
+        """Drop everything known about an area at once (it is no longer being looked at)."""
+        for key in [k for k in self.buf if k[0] == area]:
+            del self.buf[key]
+            self._stable_keys.discard(key)
+
+    def update(self, per_area: dict[str, list[tuple]], axis: dict[str, int] | None = None) -> None:
+        """per_area: area -> [(code, conf, (x, y)[, box]), ...] for this pass (areas with no cards = []).
+        box = (x1, y1, x2, y2) in frame pixels, reported back so the viewer can draw exactly the cards that are sent."""
         if axis:
             self.axis.update(axis)
         for area, dets in per_area.items():
-            best: dict[str, tuple[float, tuple[float, float]]] = {}
-            for code, conf, pos in dets:                    # duplicates of one card collapse to the best box
+            best: dict[str, tuple] = {}
+            for code, conf, pos, *box in dets:              # duplicates of one card collapse to the best box
                 if code not in best or conf > best[code][0]:
-                    best[code] = (conf, pos)
+                    best[code] = (conf, pos, box[0] if box else None)
             for key in [k for k in self.buf if k[0] == area and k[1] not in best]:
                 self.buf[key].append(None)
-            for code, (conf, pos) in best.items():
-                self.buf.setdefault((area, code), deque(maxlen=self.window)).append((conf, pos))
+            for code, entry in best.items():
+                self.buf.setdefault((area, code), deque(maxlen=self.window)).append(entry)
         for key in [k for k, q in self.buf.items() if len(q) == self.window and all(x is None for x in q)]:
             del self.buf[key]
             self._stable_keys.discard(key)
@@ -98,21 +104,32 @@ class CardTracker:
             seen = [x for x in q if x is not None]
             if len(seen) <= len(q) / 2:                     # absent most of the time: not a card
                 continue
-            conf = sum(c for c, _ in seen) / len(seen)
-            pos = [sum(p[i] for _, p in seen) / len(seen) for i in (0, 1)]
+            conf = sum(x[0] for x in seen) / len(seen)
+            pos = [sum(x[1][i] for x in seen) / len(seen) for i in (0, 1)]
             earned = len(q) >= self.need and len(seen) >= self.need and conf >= self.min_conf
             # motion (a hand reaching in) only stops NEW cards from becoming stable; cards already stable stay stable
             stable = earned and (not self.moving or (area, code) in self._stable_keys)
             if stable:
                 self._stable_keys.add((area, code))
-            by_area.setdefault(area, []).append({"code": code, "conf": round(conf, 4), "stable": stable, "pos": pos})
+            by_area.setdefault(area, []).append({"code": code, "conf": round(conf, 4), "stable": stable, "pos": pos, "box": seen[-1][2]})
         zones: dict[str, dict | None] = {}
         warns = list(warnings or [])
-        for area, cards in by_area.items():
+        # One deck: a card lying across two areas is read in both (its two corners). It counts once. Stable reads
+        # claim first and the board wins, so the count of board cards can't flip-flop.
+        owner: dict[str, str] = {}
+        unique: dict[str, list[dict]] = {}
+        for area, c in sorted(((a, c) for a, cs in by_area.items() for c in cs), key=lambda ac: (not ac[1]["stable"], ac[0] != "BOARD", ac[0])):
+            if c["code"] in owner:
+                if c["stable"]:
+                    warns.append(f"{c['code']} is across the line between {owner[c['code']]} and {area}: move it inside one area")
+                continue
+            owner[c["code"]] = area
+            unique.setdefault(area, []).append(c)
+        for area, cards in unique.items():
             cards.sort(key=lambda c: c["pos"][self.axis.get(area, 0)])
             for i, c in enumerate(cards):
                 zones[label_for(area, i)] = {"code": c["code"], "conf": c["conf"], "stable": c["stable"],
-                                             "top3": [[c["code"], c["conf"]]]}
+                                             "top3": [[c["code"], c["conf"]]], "box": c["box"]}
             limit = 5 if area == "BOARD" else 2
             if len(cards) > limit:
                 warns.append(f"{'Board' if area == 'BOARD' else 'Seat ' + area[1:]} area shows {len(cards)} cards")

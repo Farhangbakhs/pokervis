@@ -20,12 +20,21 @@
 <p id="msg" class="dim"></p>
 <script>
 const $ = id => document.getElementById(id); let token = null, sent = 0, busy = false;
+// Ask for the back camera at high resolution, but never fail just because a phone cannot match every preference.
+async function getCamera() {
+  try {
+    return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }, audio: false });
+  } catch (e) {
+    if (e && e.name === "NotAllowedError") throw new Error("Camera permission was denied. Allow camera access for this site in your browser settings, then reload this page.");
+    return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+}
 async function start() {
   if (!window.isSecureContext) { $("msg").innerHTML = '<span class="bad">Camera access needs HTTPS.</span> Open this page through the https tunnel link (cloudflared) instead of the http LAN address.'; return; }
   try {
     const r = await fetch("/api/dealer/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: $("pin").value }) });
     const j = await r.json(); if (!r.ok) throw new Error(j.detail); token = j.token;
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
+    const stream = await getCamera();
     const v = $("v"); v.srcObject = stream; v.hidden = false; $("login").hidden = true;
     const wake = async () => { try { await navigator.wakeLock.request("screen"); } catch {} };
     await wake();
@@ -34,13 +43,15 @@ async function start() {
     document.addEventListener("visibilitychange", () => {          // coming back to the page: keep the screen awake, restart if the camera died
       if (document.visibilityState === "visible") { wake(); if (track.readyState === "ended") location.reload(); }
     });
+    // One frame every 500 ms (the rate the card reader's motion check is tuned for), at the camera's native
+    // resolution and near-lossless JPEG: the reader must get the sharpest possible card corners.
     const c = document.createElement("canvas");
     setInterval(async () => {
       if (busy || !v.videoWidth) return; busy = true;
-      try { const w = Math.min(1280, v.videoWidth), h = Math.round(w * v.videoHeight / v.videoWidth); c.width = w; c.height = h; c.getContext("2d").drawImage(v, 0, 0, w, h);
-        const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.85));
+      try { const w = v.videoWidth, h = v.videoHeight; c.width = w; c.height = h; c.getContext("2d").drawImage(v, 0, 0, w, h);
+        const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.95));
         const r = await fetch("/api/cam/frame", { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "image/jpeg" }, body: blob });
-        if (!r.ok) throw new Error("upload " + r.status); sent++; $("msg").innerHTML = `<span class="ok">Streaming</span> · ${sent} frames sent · ${w}×${h}`; }
+        if (!r.ok) throw new Error("upload " + r.status); sent++; $("msg").innerHTML = `<span class="ok">Streaming</span> · ${sent} frames sent · ${(blob.size / 1024).toFixed(0)} KB/frame · ${w}×${h}`; }
       catch (e) { $("msg").innerHTML = `<span class="bad">${e.message}</span>`; } finally { busy = false; }
     }, 500);
   } catch (e) { $("msg").innerHTML = `<span class="bad">${e.message}</span>`; }

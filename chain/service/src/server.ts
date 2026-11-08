@@ -13,6 +13,7 @@ const cfg: Config = {
   keypairPath: process.env.SERVER_KEYPAIR ?? ".keys/server.json",
   stateDir: process.env.CHAIN_STATE_DIR ?? ".state",
   maxBuyin: Number(process.env.MAX_BUYIN ?? 5000),
+  lamportsPerChip: Number(process.env.LAMPORTS_PER_CHIP ?? 10_000),
 };
 const chain = new Chain(cfg);
 
@@ -38,8 +39,12 @@ app.setErrorHandler((err: Error, _req, reply) => {
 type Body = Record<string, unknown>;
 app.get("/health", async () => ({ ok: true, mode: "custodial", cluster: "devnet", server: chain.payer.publicKey.toBase58() }));
 app.get("/balances", async () => ({ mint: chain.mint.toBase58(), balances: await chain.balances() }));
-app.post("/join", async (req) => { const b = req.body as Body; return chain.join(b.pubkey, b.amount); });
-app.post("/cashout", async (req) => { const b = req.body as Body; return chain.cashout(b.pubkey, b.amount); });
+app.get("/info", async () => chain.info());
+app.post("/buyin_tx", async (req) => { const b = req.body as Body; return chain.buyinTx(b.pubkey, b.chips); });
+app.post("/verify_buyin", async (req) => { const b = req.body as Body; return chain.verifyBuyin(b.signature, b.pubkey); });
+app.post("/cashout_sol", async (req) => { const b = req.body as Body; return chain.cashoutSol(b.pubkey, b.amount); });
+app.get("/balance/:pubkey", async (req) => ({ balance: await chain.balanceOfWallet((req.params as { pubkey: string }).pubkey) }));
+app.post("/fund", async (req) => { const b = req.body as Body; return chain.fund(b.pubkey, b.lamports); });
 app.post("/begin_hand", async (req) => chain.beginHand((req.body as Body).hand_id));
 app.post("/abort_hand", async (req) => chain.abortHand((req.body as Body).hand_id));
 app.post("/settle", async (req) => {

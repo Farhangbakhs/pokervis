@@ -40,19 +40,22 @@ if not base:
 
 out = ROOT / "data"
 out.mkdir(exist_ok=True)
+saved = {}
 for name in ("cam", "dealer"):
     img = qrcode.make(f"{base}/{name}")
+    target = out / f"{name}_qr.png"
     try:
-        img.save(out / f"{name}_qr.png")
+        target.unlink(missing_ok=True)
+        img.save(target)
     except OSError:                                        # old QR still open in an image viewer (Windows lock)
-        img.save(out / f"{name}_qr_new.png")
-        print(f"(could not overwrite data/{name}_qr.png; saved data/{name}_qr_new.png)")
+        target = out / f"{name}_qr_{base.split('//')[1].split('.')[0][:12]}.png"   # unique name: never confuse it with a stale file
+        img.save(target)
+        print(f"(could not overwrite data/{name}_qr.png; saved {target.name})")
+    saved[name] = target
 (out / "public_url.txt").write_text(base)        # the game server builds phone-reachable seat QRs from this
-print(f"\nCamera phone : {base}/cam      (QR: data/cam_qr.png)")
-print(f"Dealer phone : {base}/dealer   (QR: data/dealer_qr.png)")
+print(f"\nCamera phone : {base}/cam      (QR: {saved["cam"].name})")
+print(f"Dealer phone : {base}/dealer   (QR: {saved["dealer"].name})")
 print(f"Vision source: web:http://127.0.0.1:8000")
-if os.name == "nt":
-    os.startfile(out / "cam_qr.png")
 print("\nTunnel running. Leave this window open. Ctrl+C to stop.")
 try:
     proc.wait()

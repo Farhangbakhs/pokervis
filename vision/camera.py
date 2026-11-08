@@ -26,7 +26,7 @@ class Camera:
         self._cap = None
         if source.startswith("web:"):
             self._url = source[4:].rstrip("/") + "/api/cam/latest.jpg"
-            self._http = httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=5)
+            self._http = httpx.Client(headers={"Authorization": f"Bearer {token}"}, timeout=8)
             target = self._poll_web
         else:
             src = int(source) if source.isdigit() else source
@@ -57,7 +57,7 @@ class Camera:
         last = 0.0
         while not self._stop:
             try:
-                r = self._http.get(self._url)
+                r = self._http.get(self._url, params={"after": last})      # long-poll: returns the moment a new frame lands
                 if r.status_code == 200:
                     ts = float(r.headers.get("x-frame-ts", "0"))
                     if ts != last:
@@ -65,11 +65,12 @@ class Camera:
                         if f is not None:
                             self.frame, self.ts, self.ok, last = f, time.time(), True, ts
                             continue
-                else:
+                elif r.status_code != 204:
                     self.ok = False
+                    time.sleep(0.2)
             except httpx.HTTPError:
                 self.ok = False
-            time.sleep(0.15)
+            time.sleep(0.02)
 
     def read(self) -> tuple[np.ndarray | None, float]:
         return self.frame, self.ts
