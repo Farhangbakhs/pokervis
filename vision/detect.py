@@ -54,10 +54,20 @@ def one_read_per_card(img: np.ndarray, dets: list[RawDet]) -> list[RawDet]:
 class CardDetector:
     def __init__(self, weights: str = DEFAULT_WEIGHTS, imgsz: int = 640, conf: float = 0.35,
                  queen_fix: bool = True, device: str = "cpu"):
+        import os
+
+        import torch
         from ultralytics import YOLO
-        self.model = YOLO(weights)                         # the trained .pt: its OpenVINO export invents extra low-confidence cards
+        # On a 12-thread PC, 12 threads read in 363 ms and the default 6 in 477 ms. A container with a CPU limit may still
+        # report the host's core count, so hosts should set TORCH_THREADS to the CPUs they really have.
+        torch.set_num_threads(int(os.environ.get("TORCH_THREADS") or max(2, (os.cpu_count() or 2) - 2)))
+        self.model = YOLO(weights)                      # the trained .pt: its OpenVINO export invents extra low-confidence cards
         self.imgsz, self.conf, self.device = imgsz, conf, device
         self.qfix: QueenFix | None = load_or_none() if queen_fix else None
+
+    def warm_up(self) -> None:
+        """Run one blank read so the first real card does not pay for the model's lazy setup."""
+        self.model.predict(np.zeros((640, 256, 3), np.uint8), imgsz=self.imgsz, conf=self.conf, verbose=False, device=self.device)
 
     def detect(self, frame: np.ndarray) -> list[RawDet]:
         r = self.model.predict(frame, imgsz=self.imgsz, conf=self.conf, verbose=False,

@@ -1,0 +1,37 @@
+# The public landing page: the static introduction and setup guide. Static, so a traffic spike never reaches the game server.
+# Set the repository variable LIVE_URL (Settings > Secrets and variables > Actions > Variables) to the game server's
+# address to show the START A LIVE TABLE button. Enable Pages with Source: GitHub Actions.
+name: Landing page
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the static site
+        env:
+          LIVE_URL: ${{ vars.LIVE_URL }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          cp -r web _site
+          touch _site/.nojekyll
+          printf 'window.POKERVIS = {static: true, liveUrl: "%s", repoUrl: "%s"};\n' "$LIVE_URL" "$REPO_URL" > _site/config.js
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

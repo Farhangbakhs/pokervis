@@ -36,7 +36,7 @@
     <div class="cam-row">
       <img id="cam-qr-main" class="px" alt="QR code: scan with the camera phone" />
       <div>
-        <p class="hint">Scan with the phone that will watch the table (or open the link below on it). Enter the dealer PIN, tap Start camera.</p>
+        <p class="hint" id="cam-hint">Scan with the phone that will watch the table (or open the link below on it). Enter the dealer PIN, tap Start camera.</p>
         <a id="cam-url" target="_blank" rel="noopener"></a>
         <button id="cam-copy" type="button">COPY LINK</button>
         <p class="hint" id="cam-help">The card reader needs about a minute to load after a fresh start.</p>
@@ -45,6 +45,43 @@
   </section>
 
   <main>
+    <!-- the public landing page: what it is, where cards go, how to open a table -->
+    <section id="landing-panel" class="panel" hidden>
+      <div class="landing-grid">
+        <div>
+          <h2>A CAMERA DEALS THE POKER</h2>
+          <p class="hint">PokerVis watches a real table from a phone, reads the physical cards with computer vision, and runs the game on everyone's screen.</p>
+          <button id="landing-start" class="go" type="button" hidden>START A LIVE TABLE</button>
+          <a id="landing-repo" class="btn" target="_blank" rel="noopener" hidden>SOURCE CODE</a>
+          <p class="hint">To play you need a deck of cards, a phone to hold above the table, a second screen and a Solana wallet on devnet.</p>
+          <p id="landing-err" class="error"></p>
+        </div>
+        <figure id="area-map-fig">
+          <div id="area-map" role="img" aria-label="The camera's view: a board area in the middle and four seat areas around it">
+            <div style="left:20%;top:24%;width:60%;height:52%;--c:#ffb020">BOARD</div>
+            <div style="left:10%;top:78%;width:80%;height:20%;--c:#3ddc84">SEAT 1</div>
+            <div style="left:82%;top:24%;width:17%;height:52%;--c:#4aa8ff">S2</div>
+            <div style="left:10%;top:2%;width:80%;height:20%;--c:#ff6bd6">SEAT 3</div>
+            <div style="left:1%;top:24%;width:17%;height:52%;--c:#b08cff">S4</div>
+          </div>
+          <figcaption>WHAT THE CAMERA WATCHES</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- the short guide: landing page and hosted tables -->
+    <details id="guide" class="panel" hidden>
+      <summary>HOW TO SET UP A TABLE</summary>
+      <ol class="steps">
+        <li><b>Get a wallet.</b> Install Phantom, Solflare or Backpack and switch it to Solana Devnet. Get free devnet SOL at <a href="https://faucet.solana.com" target="_blank" rel="noopener">faucet.solana.com</a>.</li>
+        <li><b>Open a table</b> on a laptop or big screen. That screen is the dealer.</li>
+        <li><b>Point the camera.</b> Scan the camera QR with a phone and fix it about 1 m above the table, looking straight down.</li>
+        <li><b>Check the areas.</b> Under CAMERA &amp; TOOLS, drag the board and seat areas to fit your table.</li>
+        <li><b>Sit down.</b> Each player scans a seat QR, buys in with devnet SOL and sits. Playing alone? You can add a bot under CAMERA &amp; TOOLS.</li>
+        <li><b>Play.</b> Deal two cards each and press START ROUND. Bet on your phone and lay the board in the board area. After the river, put your two cards face up in your seat area. The winner is paid in CHIP, and you can cash out to SOL.</li>
+      </ol>
+    </details>
+
     <!-- the one line everybody watches: what is happening, and who has to do something -->
     <section id="status" class="statusbar" data-code="wait" aria-live="polite">
       <div id="status-headline">CONNECTING…</div>
@@ -160,9 +197,13 @@
         </div>
         <div>
           <h3>SET UP</h3>
-          <a class="btn" href="/areas" target="_blank" rel="noopener">EDIT TABLE AREAS</a>
+          <a class="btn" id="areas-link" href="/areas" target="_blank" rel="noopener">EDIT TABLE AREAS</a>
           <h3>PLAYERS</h3>
           <div id="kick-list" class="hint">NOBODY SEATED</div>
+          <div id="add-bot" hidden>
+            <button id="d-bot" type="button">ADD A BOT</button>
+            <p class="hint">Optional, for when you have no opponent. A bot's two cards are dealt virtually at showdown.</p>
+          </div>
           <h3>EMERGENCY</h3>
           <button id="t-abort" class="danger" type="button">RESET THIS HAND</button>
           <p class="hint">Cancels the hand, nobody wins or loses chips.</p>
@@ -200,6 +241,7 @@
   </dialog>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+  <script src="config.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

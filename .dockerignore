@@ -1,0 +1,17 @@
+# Allow-list: nothing reaches the image unless it is named here, so .env, wallet keys and footage cannot leak in.
+*
+!game
+!server
+!vision
+!web
+!requirements.txt
+!scripts/hosted.sh
+!models/koolguy06/playing-cards.pt
+!models/queen_gallery.npz
+!chain/service/package.json
+!chain/service/package-lock.json
+!chain/service/tsconfig.json
+!chain/service/src
+!chain/service/.state/state.json
+**/__pycache__
+**/tests

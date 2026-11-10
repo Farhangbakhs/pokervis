@@ -1,59 +1,4 @@
-from vision.tracker import ZoneTracker
-
-
-def feed(t, n, **zones):
-    for _ in range(n):
-        t.update({z: v for z, v in zones.items()})
-
-
-def test_stable_after_enough_agreeing_frames_only():
-    t = ZoneTracker(window=5, need=4)
-    feed(t, 3, B1=("As", 0.99))
-    assert t.message()["zones"]["B1"]["stable"] is False          # not enough frames yet
-    feed(t, 1, B1=("As", 0.99))
-    z = t.message()["zones"]["B1"]
-    assert z["stable"] and z["code"] == "As"
-
-
-def test_flip_flopping_never_goes_stable():
-    t = ZoneTracker()
-    for i in range(10):
-        t.update({"B1": ("As" if i % 2 else "Ah", 0.99)})
-    assert t.message()["zones"]["B1"]["stable"] is False
-
-
-def test_low_confidence_not_stable():
-    t = ZoneTracker()
-    feed(t, 5, B1=("As", 0.70))
-    assert t.message()["zones"]["B1"]["stable"] is False
-
-
-def test_motion_blocks_stability_then_recovers():
-    t = ZoneTracker()
-    feed(t, 5, B1=("As", 0.99))
-    t.set_motion(True)
-    assert t.message()["zones"]["B1"]["stable"] is False
-    t.set_motion(False)
-    assert t.message()["zones"]["B1"]["stable"] is True
-
-
-def test_one_bad_frame_is_outvoted():
-    t = ZoneTracker()
-    feed(t, 4, B1=("Kd", 0.99))
-    t.update({"B1": ("Kh", 0.99)})
-    z = t.message()["zones"]["B1"]
-    assert z["code"] == "Kd" and z["stable"]
-
-
-def test_card_removed_clears_zone():
-    t = ZoneTracker()
-    feed(t, 5, B1=("As", 0.99))
-    for _ in range(4):
-        t.update({}, zone_names=["B1"])
-    assert t.message()["zones"]["B1"] is None
-
-
-from vision.tracker import CardTracker  # noqa: E402
+from vision.tracker import CardTracker
 
 
 def feed_cards(t, n, **areas):
@@ -135,3 +80,22 @@ def test_motion_does_not_make_already_stable_cards_vanish_but_blocks_new_ones():
     assert z["B2"]["stable"] is False                      # the new one waits until the hand is out
     t.set_motion(False)
     assert t.message()["zones"]["B2"]["stable"] is True
+
+
+def test_a_hand_over_one_area_only_holds_back_that_area():
+    t = CardTracker()
+    t.set_area_motion({"S1"})
+    feed_cards(t, 4, BOARD=[("As", .8, (1, 1))], S1=[("Kd", .8, (2, 1))])
+    z = t.message()["zones"]
+    assert z["B1"]["stable"] is True and z["1a"]["stable"] is False
+
+
+def test_settled_only_when_every_card_has_its_votes_and_none_went_missing():
+    t = CardTracker()
+    assert t.settled("BOARD")
+    feed_cards(t, 2, BOARD=[("As", .8, (1, 1))])
+    assert not t.settled("BOARD")
+    feed_cards(t, 1, BOARD=[("As", .8, (1, 1))])
+    assert t.settled("BOARD")
+    t.update({"BOARD": []})
+    assert not t.settled("BOARD")

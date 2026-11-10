@@ -3,23 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>AutoPoker Dealer Cam</title>
-<style>
-  :root { --bg:#0b1511; --ink:#eaf2ec; --dim:#8fa597; --ok:#3ddc84; --bad:#ff6b6b; }
-  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui,sans-serif; padding:14px; }
-  video { width:100%; border-radius:10px; background:#000; } input,button { font:inherit; padding:14px; border-radius:10px; border:0; width:100%; margin-top:8px; }
-  input { border:1px solid #27402f; background:transparent; color:var(--ink); } button { background:#1f7a4a; color:#fff; font-weight:700; }
-  .dim { color:var(--dim); } .bad { color:var(--bad); } .ok { color:var(--ok); }
-</style>
+<title>PokerVis Camera</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui/vendor/style.css">
+<link rel="stylesheet" href="/ui/live.css">
 </head>
 <body>
-<h3>Dealer camera</h3>
-<p class="dim">Mount this phone about 1 m above the table, pointing straight down. Lock the screen rotation and keep the screen on.</p>
-<div id="login"><input id="pin" inputmode="numeric" placeholder="Dealer PIN"><button id="go">Start camera</button></div>
-<video id="v" autoplay playsinline muted hidden></video>
-<p id="msg" class="dim"></p>
+<header><h1>POKER<span>VIS</span></h1></header>
+<main class="page">
+<section class="panel">
+  <h2>TABLE CAMERA</h2>
+  <p class="hint">Fix this phone about 1 m above the table, looking straight down. Lock the screen rotation and keep the screen on.</p>
+  <div id="login"><input id="pin" class="field" inputmode="numeric" placeholder="DEALER PIN"><button id="go" class="go wide" type="button">START CAMERA</button></div>
+  <video id="v" autoplay playsinline muted hidden></video>
+  <p id="msg" class="hint"></p>
+</section>
+</main>
 <script>
-const $ = id => document.getElementById(id); let token = null, sent = 0, busy = false;
+const $ = id => document.getElementById(id); let sent = 0;
+const FRAME_MS = 250, MAX_SIDE = 1920, QUALITY = 0.8;      // 4 fps; the next frame leaves only when the last one has landed
+const ROOM = new URLSearchParams(location.search).get("room") || "";
+let token = (location.hash.match(/[#&]t=([^&]+)/) || [])[1] || null;
+if (token) { $("pin").hidden = true; }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 // Ask for the back camera at high resolution, but never fail just because a phone cannot match every preference.
 async function getCamera() {
   try {
@@ -32,8 +40,10 @@ async function getCamera() {
 async function start() {
   if (!window.isSecureContext) { $("msg").innerHTML = '<span class="bad">Camera access needs HTTPS.</span> Open this page through the https tunnel link (cloudflared) instead of the http LAN address.'; return; }
   try {
-    const r = await fetch("/api/dealer/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: $("pin").value }) });
-    const j = await r.json(); if (!r.ok) throw new Error(j.detail); token = j.token;
+    if (!token) {
+      const r = await fetch("/api/dealer/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: $("pin").value }) });
+      const j = await r.json(); if (!r.ok) throw new Error(j.detail); token = j.token;
+    }
     const stream = await getCamera();
     const v = $("v"); v.srcObject = stream; v.hidden = false; $("login").hidden = true;
     const wake = async () => { try { await navigator.wakeLock.request("screen"); } catch {} };
@@ -43,17 +53,22 @@ async function start() {
     document.addEventListener("visibilitychange", () => {          // coming back to the page: keep the screen awake, restart if the camera died
       if (document.visibilityState === "visible") { wake(); if (track.readyState === "ended") location.reload(); }
     });
-    // One frame every 500 ms (the rate the card reader's motion check is tuned for), at the camera's native
-    // resolution and near-lossless JPEG: the reader must get the sharpest possible card corners.
     const c = document.createElement("canvas");
-    setInterval(async () => {
-      if (busy || !v.videoWidth) return; busy = true;
-      try { const w = v.videoWidth, h = v.videoHeight; c.width = w; c.height = h; c.getContext("2d").drawImage(v, 0, 0, w, h);
-        const blob = await new Promise(res => c.toBlob(res, "image/jpeg", 0.95));
-        const r = await fetch("/api/cam/frame", { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "image/jpeg" }, body: blob });
-        if (!r.ok) throw new Error("upload " + r.status); sent++; $("msg").innerHTML = `<span class="ok">Streaming</span> · ${sent} frames sent · ${(blob.size / 1024).toFixed(0)} KB/frame · ${w}×${h}`; }
-      catch (e) { $("msg").innerHTML = `<span class="bad">${e.message}</span>`; } finally { busy = false; }
-    }, 500);
+    for (;;) {
+      const t0 = performance.now();
+      if (v.videoWidth) {
+        try {
+          const s = Math.min(1, MAX_SIDE / Math.max(v.videoWidth, v.videoHeight)), w = Math.round(v.videoWidth * s), h = Math.round(v.videoHeight * s);
+          c.width = w; c.height = h; c.getContext("2d").drawImage(v, 0, 0, w, h);
+          const blob = await new Promise(res => c.toBlob(res, "image/jpeg", QUALITY));
+          const r = await fetch("/api/cam/frame", { method: "POST", headers: { Authorization: "Bearer " + token, "Content-Type": "image/jpeg" }, body: blob });
+          if (r.status === 404 || r.status === 401) { $("msg").innerHTML = '<span class="bad">This table has closed.</span>'; stream.getTracks().forEach(x => x.stop()); return; }
+          if (!r.ok) throw new Error("upload " + r.status);
+          sent++; $("msg").innerHTML = `<span class="ok">Streaming</span> · ${sent} frames sent · ${(blob.size / 1024).toFixed(0)} KB/frame · ${w}×${h}`;
+        } catch (e) { $("msg").innerHTML = `<span class="bad">${e.message}</span>`; await sleep(500); }
+      }
+      await sleep(Math.max(10, FRAME_MS - (performance.now() - t0)));
+    }
   } catch (e) { $("msg").innerHTML = `<span class="bad">${e.message}</span>`; }
 }
 $("go").onclick = start;

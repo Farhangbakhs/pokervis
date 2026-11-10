@@ -14,7 +14,8 @@ class ChainError(Exception):
 class Chain(Protocol):
     mode: str
 
-    def begin_hand(self, hand_id: str) -> dict: ...
+    def begin_hand(self, hand_id: str, players: list[str] | None = None) -> dict: ...
+    def bot_bankroll(self, pubkey: str, chips: int) -> dict: ...
     def abort_hand(self, hand_id: str) -> dict: ...
     def settle(self, hand_id: str, deltas: dict[str, int], showdown_hash: str) -> dict: ...
     def balances(self) -> dict[str, int]: ...
@@ -31,15 +32,28 @@ class MockChain:
 
     def __init__(self) -> None:
         self.bal: dict[str, int] = {}
-        self.begun: str | None = None
+        self.open: dict[str, str] = {}                   # table -> its open hand, same rule as the real chain service
+        self.players: dict[str, list[str]] = {}
         self.settled: dict[str, dict] = {}
+
+    @staticmethod
+    def _table(hand_id: str) -> str:
+        return hand_id.split(".", 1)[0] if "." in hand_id else ""
+
+    @property
+    def begun(self) -> str | None:
+        return self.open.get("")
+
+    @begun.setter
+    def begun(self, hand_id: str | None) -> None:
+        self.open.pop("", None) if hand_id is None else self.open.__setitem__("", hand_id)
 
     def _credit(self, pubkey: str, amount: int) -> dict:
         self.bal[pubkey] = self.bal.get(pubkey, 0) + amount
         return {"balance": self.bal[pubkey], "signature": "mock-join", "explorer_url": ""}
 
     def _cashout(self, pubkey: str, amount: int | None = None) -> dict:
-        if self.begun:
+        if any(not self.players.get(h) or pubkey in self.players[h] for h in self.open.values()):
             raise ChainError("hand in progress")
         amt = self.bal.get(pubkey, 0) if amount is None else amount
         if not 1 <= amt <= self.bal.get(pubkey, 0):
@@ -47,24 +61,31 @@ class MockChain:
         self.bal[pubkey] -= amt
         return {"amount": amt, "balance": self.bal[pubkey], "signature": "mock-cashout", "explorer_url": ""}
 
-    def begin_hand(self, hand_id: str) -> dict:
+    def begin_hand(self, hand_id: str, players: list[str] | None = None) -> dict:
         if hand_id in self.settled:
             raise ChainError("hand_id already settled")
-        if self.begun and self.begun != hand_id:
-            raise ChainError(f"hand {self.begun} still open")           # same rule as the real chain service
-        self.begun = hand_id
+        table, current = self._table(hand_id), self.open.get(self._table(hand_id))
+        if current and current != hand_id:
+            raise ChainError(f"hand {current} still open")
+        self.open[table] = hand_id
+        self.players[hand_id] = list(players or [])
         return {"ok": True}
 
+    def bot_bankroll(self, pubkey: str, chips: int) -> dict:
+        if self.bal.get(pubkey, 0) < chips:
+            self.bal[pubkey] = chips
+        return {"balance": self.bal[pubkey]}
+
     def abort_hand(self, hand_id: str) -> dict:
-        if self.begun != hand_id:
+        if self.open.get(self._table(hand_id)) != hand_id:
             raise ChainError("that hand is not open")
-        self.begun = None
+        del self.open[self._table(hand_id)]
         return {"ok": True}
 
     def settle(self, hand_id: str, deltas: dict[str, int], showdown_hash: str) -> dict:
         if hand_id in self.settled:
             return {**self.settled[hand_id], "replay": True}
-        if self.begun != hand_id:
+        if self.open.get(self._table(hand_id)) != hand_id:
             raise ChainError("hand not begun")
         if sum(deltas.values()) != 0:
             raise ChainError("deltas must sum to 0")
@@ -76,7 +97,7 @@ class MockChain:
         sig = "mock-" + hashlib.sha256(f"{hand_id}{showdown_hash}".encode()).hexdigest()[:16]
         rec = {"signature": sig, "explorer_url": f"https://explorer.solana.com/tx/{sig}?cluster=devnet"}
         self.settled[hand_id] = rec
-        self.begun = None
+        del self.open[self._table(hand_id)]
         return rec
 
     def balances(self) -> dict[str, int]:
@@ -131,8 +152,11 @@ class HttpChain:
     def fund(self, pubkey: str, lamports: int) -> dict:
         return self._call("POST", "/fund", {"pubkey": pubkey, "lamports": lamports})
 
-    def begin_hand(self, hand_id: str) -> dict:
-        return self._call("POST", "/begin_hand", {"hand_id": hand_id})
+    def begin_hand(self, hand_id: str, players: list[str] | None = None) -> dict:
+        return self._call("POST", "/begin_hand", {"hand_id": hand_id, "players": players or []})
+
+    def bot_bankroll(self, pubkey: str, chips: int) -> dict:
+        return self._call("POST", "/bot_bankroll", {"pubkey": pubkey, "chips": chips})
 
     def abort_hand(self, hand_id: str) -> dict:
         return self._call("POST", "/abort_hand", {"hand_id": hand_id})

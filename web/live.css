@@ -244,3 +244,50 @@ main { gap: 14px; }
 #cam-qr-main { width: auto; height: auto; max-width: 100%; background: #fff; padding: 8px; image-rendering: pixelated; }
 #cam-url { display: block; word-break: break-all; color: var(--teal); margin: 6px 0; font-size: 18px; }
 #cam-copy { min-height: 44px; }
+
+/* hosted tables and the public landing page */
+body.mode-landing #join, body.mode-landing #controls, body.mode-landing #status, body.mode-landing .statuses { display: none; }
+#guide[hidden], #add-bot[hidden], #landing-panel[hidden], #landing-start[hidden], #landing-repo[hidden] { display: none; }
+.steps { margin: 0 0 10px; padding-left: 22px; color: var(--cream); font-size: 18px; line-height: 1.2; }
+.steps li { margin: 6px 0; }
+.landing-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; }
+#landing-start { min-height: 52px; padding: 12px 20px; font-size: 11px; }
+#area-map-fig { margin: 0; width: 200px; }
+#area-map-fig figcaption { font-family: var(--px); font-size: 8px; line-height: 1.6; color: var(--teal); margin-top: 6px; text-align: center; }
+@media (max-width: 640px) {
+  .landing-grid { grid-template-columns: 1fr; }
+  #area-map-fig { width: min(200px, 60vw); margin: 0 auto; }
+}
+
+.tx-link[hidden] { display: none; }
+#cam-qr-main { max-width: min(280px, 100%); }
+.statuses { flex-wrap: wrap; }
+.statuses .pill { white-space: nowrap; height: auto; }
+@media (max-width: 640px) {
+  body { overflow-x: hidden; }
+  .statuses .pill { font-size: 7px; }
+}
+main { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 640px) { .landing-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* the short guide uses the same drawer as CAMERA & TOOLS */
+#guide > summary { font-family: var(--px); font-size: 10px; color: var(--gold); cursor: pointer; padding: 4px 0; }
+#guide .steps { margin-top: 12px; }
+#guide a { color: var(--teal); }
+.steps b { color: var(--gold); font-weight: normal; }
+
+/* the camera and areas pages: same look as the table */
+.page { max-width: 720px; margin: 0 auto; display: grid; gap: 14px; }
+.page[hidden] { display: none; }
+.field { width: 100%; font-family: var(--px); font-size: 12px; padding: 10px; background: #0d0b1a; color: var(--gold); border: 0; box-shadow: 0 0 0 3px var(--ink), inset 0 0 0 2px #2e2850; }
+.field:focus { outline: 3px solid var(--teal); }
+.page video, .page canvas { display: block; width: 100%; background: #000; touch-action: none; }
+.tabs { display: flex; flex-wrap: wrap; gap: 12px; margin: 10px 4px; }
+.tabs button.sel { outline: 3px solid var(--cream); }
+.ok { color: var(--teal); }
+.bad { color: #ff7b84; }
+.page video[hidden], .page canvas[hidden] { display: none; }
+
+/* the landing page's picture of the play areas: same boxes and colours as the areas page */
+#area-map { position: relative; aspect-ratio: 9 / 16; background: repeating-conic-gradient(var(--felt) 0 25%, var(--felt-dark) 0 50%) 0 0 / 4px 4px; box-shadow: 0 0 0 4px var(--ink); }
+#area-map div { position: absolute; display: flex; align-items: center; justify-content: center; font-family: var(--px); font-size: 7px; color: var(--c); border: 3px solid var(--c); background: rgba(0, 0, 0, 0.35); }

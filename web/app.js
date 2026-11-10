@@ -12,8 +12,15 @@ const params = new URLSearchParams(location.search);
 const SEAT_PARAM = Number(params.get('seat')) || 0;
 const CODE_PARAM = params.get('code') || '';
 const DEALER = params.has('dealer');
-let dealerToken = (() => { try { return localStorage.getItem('pokervis.dealer'); } catch { return null; } })();
+const CFG = window.POKERVIS || {};                 // config.js: {static, liveUrl, repoUrl} on the public landing page
+const ROOM = params.get('room') || '';             // a hosted play-chip table; empty = the one local table
+const LANDING = !!CFG.static || params.has('landing');
+const roomKey = (k) => (ROOM ? `${k}.${ROOM}` : k);
+const roomQuery = ROOM ? `room=${encodeURIComponent(ROOM)}` : '';
+const tableUrl = () => location.pathname + (roomQuery ? `?${roomQuery}` : '');
+let dealerToken = (() => { try { return localStorage.getItem(roomKey('pokervis.dealer')); } catch { return null; } })();
 document.body.classList.toggle('mode-dealer', DEALER);
+document.body.classList.toggle('mode-landing', LANDING);
 const STREETS = { 3: 'THE FLOP!', 4: 'THE TURN!', 5: 'THE RIVER!' };
 
 // ---------------------------------------------------------------------------
@@ -84,6 +91,7 @@ function importedWallet(secret) {
 }
 
 async function initWallet() {
+  if (LANDING) return null;
   let mode = null;
   try { mode = localStorage.getItem(WKEY); } catch { /* storage blocked */ }
   for (let i = 0; i < 8 && !availableProviders().length; i++) await sleep(50);      // wallet extensions inject a moment after load
@@ -105,7 +113,7 @@ const loadWeb3 = () => web3Promise || (web3Promise = new Promise((res, rej) => {
   document.head.appendChild(el);
 }));
 
-const SKEY = 'pokervis.session';
+const SKEY = roomKey('pokervis.session');
 let session = (() => { try { return JSON.parse(localStorage.getItem(SKEY)); } catch { return null; } })();
 function saveSession(s) {
   session = s;
@@ -142,7 +150,7 @@ async function signIn(seat, code, name) {
   if (!W) throw new Error('This browser cannot make a wallet');
   const ch = await api('/api/auth/challenge', { pubkey: W.pub });
   const sig = await W.sign(new TextEncoder().encode(ch.message));          // the wallet proves it owns the address
-  const r = await api('/api/auth/login', { pubkey: W.pub, nonce: ch.nonce, signature: b64(sig), seat, seat_code: code, name });
+  const r = await api('/api/auth/login', { pubkey: W.pub, nonce: ch.nonce, signature: b64(sig), seat, seat_code: code, name, room: ROOM });
   saveSession({ seat, token: r.token, code, at: Date.now() });   // the seat code is kept so a lost token can be renewed silently
   return r;
 }
@@ -155,25 +163,25 @@ const slots = [...document.querySelectorAll('.slot')].map((el) => ({
 }));
 
 function clearSlot(s) {
-  s.code = null; s.token++;
+  s.code = null; s.token++; s.scanning = false;
   s.el.className = 'slot empty';
   s.label.textContent = '';
   s.canvas.getContext('2d').clearRect(0, 0, s.canvas.width, s.canvas.height);
 }
 
+/** The camera has spotted a card and is still voting on it: show that straight away, the reveal follows. */
+function startScan(s) {
+  s.token++; s.scanning = true;
+  renderBack(s.canvas);
+  s.el.className = 'slot scanning';
+  s.label.textContent = 'SCANNING';
+}
+
 async function revealSlot(s, code, delay, animate) {
   const token = ++s.token;
-  s.code = code;
-  if (animate) {
+  s.code = code; s.scanning = false;
+  if (animate && delay) {
     await sleep(delay);
-    if (token !== s.token) return;
-    renderBack(s.canvas);
-    s.el.className = 'slot scanning';
-    s.label.textContent = 'SCANNING';
-    await sleep(650);
-    if (token !== s.token) return;
-    s.el.classList.add('flip-out');
-    await sleep(160);
     if (token !== s.token) return;
   }
   renderCard(s.canvas, code);
@@ -188,7 +196,7 @@ async function revealSlot(s, code, delay, animate) {
   s.label.dataset.suit = p ? p.suit : '';
 }
 
-function setBoard(cards, animate) {
+function setBoard(cards, animate, pending = 0) {
   // A card keeps its slot for as long as it stays on the table, so adding a card never redraws the others.
   // Gone cards clear; new cards take the first free slot.
   slots.forEach((s) => { if (s.code && !cards.includes(s.code)) clearSlot(s); });
@@ -198,8 +206,12 @@ function setBoard(cards, animate) {
     const free = slots.find((s) => !s.code);
     if (!free) break;
     revealSlot(free, code, stagger, animate);
-    stagger += 300;
+    stagger += 90;
   }
+  slots.filter((s) => !s.code).forEach((s, i) => {
+    if (i < pending && !s.scanning) startScan(s);
+    else if (i >= pending && s.scanning) clearSlot(s);
+  });
 }
 
 let bannerTimer;
@@ -414,7 +426,13 @@ function renderFeed(S) {
   for (const f of S.feed) {
     const a = document.createElement('a');
     a.href = f.url; a.target = '_blank'; a.rel = 'noopener';
-    a.innerHTML = `<span>${label[f.kind] || f.kind.toUpperCase()} · ${String(f.who).toUpperCase()}</span><b>${f.chips} CHIP</b><span>${f.sig.slice(0, 8)}…</span>`;
+    const what = document.createElement('span');                       // player names are untrusted: never innerHTML
+    what.textContent = `${label[f.kind] || String(f.kind).toUpperCase()} · ${String(f.who).toUpperCase()}`;
+    const chips = document.createElement('b');
+    chips.textContent = `${f.chips} CHIP`;
+    const sigEl = document.createElement('span');
+    sigEl.textContent = `${String(f.sig).slice(0, 8)}…`;
+    a.append(what, chips, sigEl);
     list.appendChild(a);
   }
 }
@@ -544,12 +562,12 @@ function setupControls() {
       const r = await api('/api/cashout_sol', {});
       saveSession(null);
       alert(`PAID ${r.sol} SOL TO YOUR WALLET\n${r.explorer_url}`);
-      location.href = location.pathname;
+      location.href = tableUrl();
     } catch (e) { $('#act-err').textContent = String(e.message || e).toUpperCase(); }
   };
   $('#b-leave').onclick = async () => {
     if (!confirm('Log out? Your chips stay safe in your wallet and are waiting when you scan a seat QR again.')) return;
-    try { await api('/api/cashout', {}); saveSession(null); location.href = location.pathname; }
+    try { await api('/api/cashout', {}); saveSession(null); location.href = tableUrl(); }
     catch (e) { $('#act-err').textContent = e.message.toUpperCase(); }
   };
 }
@@ -602,7 +620,7 @@ async function buyFlow(chips, errSel) {
   const err = $(errSel);
   if (!W) { err.textContent = 'CONNECT A SOLANA WALLET FIRST.'; return; }
   try {
-    const prep = await api('/api/sol/prepare', { pubkey: W.pub, chips });
+    const prep = await api('/api/sol/prepare', { pubkey: W.pub, chips, room: ROOM });
     const web3 = await loadWeb3();
     const tx = web3.Transaction.from(unb64(prep.tx));
     err.textContent = 'CHECKING YOUR DEVNET BALANCE…';
@@ -628,7 +646,7 @@ async function buyFlow(chips, errSel) {
       signature = await sendRaw(tx.serialize());
     }
     err.textContent = 'CONFIRMING ON SOLANA…';
-    const res = await api('/api/sol/confirm', { pubkey: W.pub, signature });
+    const res = await api('/api/sol/confirm', { pubkey: W.pub, signature, room: ROOM });
     if (session) await api('/api/sync', {});
     err.innerHTML = '';
     const a = document.createElement('a');
@@ -654,7 +672,7 @@ function setupJoin() {
       const name = $('#join-name').value.trim();
       try { localStorage.setItem('pokervis.name', name); } catch { /* storage blocked */ }
       await signIn(SEAT_PARAM, CODE_PARAM, name);
-      history.replaceState(null, '', location.pathname);       // drop the seat code from the address bar
+      history.replaceState(null, '', tableUrl());              // drop the seat code from the address bar
       if (S) render(S, false);
     } catch (e) { $('#join-err').textContent = String(e.message || e).toUpperCase(); }
   };
@@ -674,7 +692,7 @@ function maybeAutoJoin(S) {
   if (!mine && !freeAndKnown) return;
   autoTried = true;
   signIn(SEAT_PARAM, CODE_PARAM, savedName())
-    .then(() => { history.replaceState(null, '', location.pathname); if (S) render(S, false); })
+    .then(() => { history.replaceState(null, '', tableUrl()); if (S) render(S, false); })
     .catch((e) => { autoTried = false; $('#join-err').textContent = String(e.message).toUpperCase(); });
 }
 
@@ -756,7 +774,7 @@ function render(state, animate) {
   const onTable = boardOnTable(S);                                     // the camera is the source of truth for what is out
   const onTableOld = old ? boardOnTable(old).length : 0;
   if (old && animate && onTable.length > onTableOld && STREETS[Math.min(5, onTable.length)]) banner(STREETS[Math.min(5, onTable.length)]);
-  setBoard(onTable, animate);
+  setBoard(onTable, animate, S.board_pending || 0);
 
   if (animate) {
     for (const seat of S.seats) {
@@ -789,13 +807,27 @@ function render(state, animate) {
 // Connection
 // ---------------------------------------------------------------------------
 let first = true;
+function tableClosed() {
+  setPill('#net-status', 'error', 'CLOSED');
+  $('#status-headline').textContent = 'THIS TABLE HAS CLOSED';
+  $('#status-detail').textContent = 'Tables close after 15 idle minutes.';
+  const a = document.createElement('a');
+  a.className = 'btn'; a.href = '/ui/?landing=1'; a.textContent = 'START A NEW ONE';
+  $('#status-detail').appendChild(document.createElement('br'));
+  $('#status-detail').appendChild(a);
+}
+
 function connect() {
-  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/table`);
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/table${roomQuery ? `?${roomQuery}` : ''}`);
   ws.onopen = () => setPill('#net-status', 'live', 'LIVE');
   ws.onmessage = (e) => {
     try { render(JSON.parse(e.data), !first); first = false; } catch (err) { console.warn('bad state', err); }
   };
-  ws.onclose = () => { setPill('#net-status', 'error', 'OFFLINE'); setTimeout(connect, 1500); };
+  ws.onclose = (e) => {
+    if (e.code === 4404) return tableClosed();
+    setPill('#net-status', 'error', 'OFFLINE');
+    setTimeout(connect, 1500);
+  };
   ws.onerror = () => ws.close();
 }
 
@@ -812,7 +844,7 @@ async function dapi(path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const j = await r.json().catch(() => ({}));
-  if (r.status === 401) { dealerToken = null; try { localStorage.removeItem('pokervis.dealer'); } catch { /* */ } showDealerLogin(); }
+  if (r.status === 401) { dealerToken = null; try { localStorage.removeItem(roomKey('pokervis.dealer')); } catch { /* */ } showDealerLogin(); }
   if (!r.ok) throw new Error(j.detail || r.statusText);
   return j;
 }
@@ -825,14 +857,20 @@ async function fetchQr(n) {
   qrUrls[n] = '';
   try { qrUrls[n] = await dblob(`/api/dealer/seat_qr/${n}.png`); if (S) renderSeats(S); } catch { delete qrUrls[n]; }
 }
-function showDealerLogin() { $('#dealer-login').hidden = false; $('#dealer-tools').hidden = true; $('#qr-btn').hidden = true; $('#cam-panel').hidden = true; }
+function showDealerLogin() {
+  $('#dealer-login').hidden = false; $('#dealer-tools').hidden = true; $('#qr-btn').hidden = true; $('#cam-panel').hidden = true;
+  if (ROOM) {                                                  // hosted tables have no PIN: the browser that opened the table is the dealer
+    $('#d-pin').hidden = true; $('#d-go').hidden = true;
+    $('#d-err').textContent = 'ONLY THE BROWSER THAT OPENED THIS TABLE CAN DEAL IT.';
+  }
+}
 
 /** The camera-phone QR + plain link, always on the dealer page. Re-fetched every 20 s so it can never go stale. */
 async function loadCamQr() {
   if (!dealerToken) return;
   try {
     const r = await fetch('/api/dealer/cam_qr.png', { headers: { Authorization: `Bearer ${dealerToken}` } });
-    if (r.status === 401) { dealerToken = null; try { localStorage.removeItem('pokervis.dealer'); } catch { /* */ } showDealerLogin(); return; }
+    if (r.status === 401) { dealerToken = null; try { localStorage.removeItem(roomKey('pokervis.dealer')); } catch { /* */ } showDealerLogin(); return; }
     if (!r.ok) throw new Error(String(r.status));
     const url = r.headers.get('x-join-url') || '';
     const img = $('#cam-qr-main');
@@ -911,6 +949,16 @@ function setupDealer() {
   $('#join').hidden = true;
   const start = () => { $('#dealer-login').hidden = true; $('#dealer-tools').hidden = false; $('#qr-btn').hidden = false; $('#cam-panel').hidden = false; loadCamQr(); setInterval(loadCamQr, 20000); dealerPoll(); setInterval(dealerPoll, 1500); if (!liveStarted) { liveStarted = true; liveView(); } };
   $('#qr-btn').onclick = openQrDialog;
+  if (ROOM) {
+    $('#areas-link').href = `/areas?${roomQuery}`;
+    $('#cam-hint').textContent = 'Scan with the phone that will watch the table (or open the link below on it), then tap Start camera.';
+    $('#cam-help').textContent = '';
+  }
+  $('#add-bot').hidden = !ROOM;
+  $('#d-bot').onclick = async () => {                           // optional: only for a dealer who wants an opponent
+    $('#t-err').textContent = '';
+    try { await dapi('/api/dealer/add_bot', {}); } catch (e) { $('#t-err').textContent = e.message.toUpperCase(); }
+  };
   $('#cam-copy').onclick = async () => { try { await navigator.clipboard.writeText($('#cam-panel').dataset.url || ''); $('#cam-copy').textContent = 'COPIED'; } catch { $('#cam-copy').textContent = 'SELECT THE LINK ABOVE'; } setTimeout(() => { $('#cam-copy').textContent = 'COPY LINK'; }, 2000); };
   $('#qr-close').onclick = () => { const d = $('#qr-dialog'); if (d.close) d.close(); else d.removeAttribute('open'); };
   $('#d-go').onclick = async () => {
@@ -920,7 +968,7 @@ function setupDealer() {
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.detail || 'WRONG PIN');
       dealerToken = j.token;
-      try { localStorage.setItem('pokervis.dealer', dealerToken); } catch { /* */ }
+      try { localStorage.setItem(roomKey('pokervis.dealer'), dealerToken); } catch { /* */ }
       start();
       if (S) renderSeats(S);
     } catch (e) { $('#d-err').textContent = e.message.toUpperCase(); }
@@ -1015,4 +1063,42 @@ setupDealer();
 setupBadges();
 setupControls();
 setupJoin();
-connect();
+
+/** Open a new hosted table and become its dealer. On the static landing page the button goes to the live server first. */
+async function startLiveTable() {
+  const say = (t) => { $('#landing-err').textContent = t; };
+  if (CFG.liveUrl) { location.href = `${CFG.liveUrl.replace(/\/$/, '')}/ui/?landing=1&start=1`; return; }
+  say('OPENING A TABLE…');
+  try {
+    const r = await fetch('/api/rooms', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.detail || 'COULD NOT OPEN A TABLE');
+    localStorage.setItem(`pokervis.dealer.${j.room}`, j.dealer_token);
+    location.href = `/ui/?dealer=1&room=${encodeURIComponent(j.room)}`;
+  } catch (e) { say(String(e.message || e).toUpperCase()); }
+}
+
+/** The landing page's table: empty seats and a board, drawn once. Nothing here is a game. */
+function landingState() {
+  return {
+    mode: 'custodial', sol: null, feed: [], phase: 'waiting', status: { code: 'wait', headline: '', detail: '' }, roles: {}, bots: [],
+    can_start: { ok: false, reason: '' }, showdown_cards: {}, board_camera: ['Kc', '8d', '7h', 'Ts', '3h'], board_pending: 0, board: [],
+    manual_mode: false, blinds: [5, 10], buy_in: 1000, hand_id: null, pot: 0, to_act: null, board_needed: 0, min_raise_to: null,
+    max_raise_to: null, result: null, settlement: null, settle_error: null, vision: { age: 0, warnings: [] }, prompts: [],
+    seats: [1, 2, 3, 4].map((seat) => ({ seat, occupied: false })),
+  };
+}
+
+$('#guide').hidden = !(LANDING || ROOM);
+$('#guide').open = LANDING;
+if (LANDING) {
+  $('#landing-panel').hidden = false;
+  const canStart = !CFG.static || !!CFG.liveUrl;
+  $('#landing-start').hidden = !canStart;
+  $('#landing-start').onclick = startLiveTable;
+  if (CFG.repoUrl) { $('#landing-repo').href = CFG.repoUrl; $('#landing-repo').hidden = false; }
+  if (params.has('start') && canStart) startLiveTable();
+  render(landingState(), false);
+} else {
+  connect();
+}

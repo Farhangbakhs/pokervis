@@ -1,57 +1,12 @@
-"""Temporal voting per zone -> the section-3 vision message.
-
-CLAUDE.md asks for 6 of the last 8 readings; the YOLOv8l CPU loop runs ~1-2 Hz, so the default is
-4 of the last 5 (configurable). A zone is `stable` only if one code holds the vote AND its mean
-confidence is high AND the scene has been motion-free. Unstable zones are still reported (the dealer
-UI shows them yellow) but the server never auto-confirms them.
-"""
+"""Temporal voting: which cards are really in each play area -> the message sent to the server."""
 from __future__ import annotations
 
-import collections
 import time
 from collections import deque
 
 
-class ZoneTracker:
-    def __init__(self, window: int = 5, need: int = 4, min_conf: float = 0.90):
-        self.window, self.need, self.min_conf = window, need, min_conf
-        self.buf: dict[str, deque] = {}
-        self.moving = False
-
-    def set_motion(self, moving: bool) -> None:
-        self.moving = moving
-
-    def clear(self) -> None:
-        self.buf.clear()
-
-    def update(self, readings: dict[str, tuple[str, float]], zone_names: list[str] | None = None) -> None:
-        """readings: zone -> (code, conf) for zones that currently contain a card."""
-        for z in set(self.buf) | set(readings) | set(zone_names or []):
-            q = self.buf.setdefault(z, deque(maxlen=self.window))
-            q.append(readings.get(z))                       # None = empty this frame
-
-    def message(self, warnings: list[str] | None = None, ts: float | None = None) -> dict:
-        zones: dict[str, dict | None] = {}
-        for z, q in self.buf.items():
-            if not q:
-                continue
-            empties = sum(1 for x in q if x is None)
-            if empties > len(q) / 2:
-                zones[z] = None
-                continue
-            votes = collections.Counter(x[0] for x in q if x is not None)
-            code, n = votes.most_common(1)[0]
-            confs = [x[1] for x in q if x is not None and x[0] == code]
-            mean = sum(confs) / len(confs)
-            tot = sum(votes.values())
-            stable = (not self.moving and len(q) >= self.need and n >= self.need and mean >= self.min_conf)
-            zones[z] = {"code": code, "conf": round(mean, 4), "stable": stable,
-                        "top3": [[c, round(v / tot, 3)] for c, v in votes.most_common(3)]}
-        return {"ts": ts or time.time(), "zones": zones, "warnings": warnings or []}
-
-
 class CardTracker:
-    """Per-AREA tracking of distinct cards (the area-based replacement for ZoneTracker).
+    """Per-AREA tracking of distinct cards.
 
     The detector may report one card several times (each corner index is its own box) and may flicker a
     phantom. We therefore track every (area, code) pair across the last `window` passes and call a card real
@@ -63,12 +18,21 @@ class CardTracker:
     def __init__(self, window: int = 4, need: int = 3, min_conf: float = 0.35):
         self.window, self.need, self.min_conf = window, need, min_conf
         self.buf: dict[tuple[str, str], deque] = {}
-        self.moving = False
+        self.moving = False                                # everything is moving
+        self.moving_areas: set[str] = set()                # these areas have a hand over them right now
         self.axis: dict[str, int] = {}                     # area -> 0 sort by x, 1 sort by y
         self._stable_keys: set[tuple[str, str]] = set()    # cards that have already earned "stable"
 
     def set_motion(self, moving: bool) -> None:
         self.moving = moving
+
+    def set_area_motion(self, areas: set[str]) -> None:
+        self.moving_areas = set(areas)
+
+    def settled(self, area: str) -> bool:
+        """Every card in this area has earned its votes and nothing has gone missing: more reads cannot change the answer."""
+        qs = [q for k, q in self.buf.items() if k[0] == area]
+        return all(len(q) >= self.need and all(x is not None for x in q) for q in qs)
 
     def clear(self) -> None:
         self.buf.clear()
@@ -108,7 +72,7 @@ class CardTracker:
             pos = [sum(x[1][i] for x in seen) / len(seen) for i in (0, 1)]
             earned = len(q) >= self.need and len(seen) >= self.need and conf >= self.min_conf
             # motion (a hand reaching in) only stops NEW cards from becoming stable; cards already stable stay stable
-            stable = earned and (not self.moving or (area, code) in self._stable_keys)
+            stable = earned and (not (self.moving or area in self.moving_areas) or (area, code) in self._stable_keys)
             if stable:
                 self._stable_keys.add((area, code))
             by_area.setdefault(area, []).append({"code": code, "conf": round(conf, 4), "stable": stable, "pos": pos, "box": seen[-1][2]})

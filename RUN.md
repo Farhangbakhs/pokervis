@@ -17,8 +17,8 @@ Dealer PIN is `DEALER_PIN` in `.env`.
    Make them big. Cards can sit anywhere inside their area.
 
 ## Players
-Scan the seat QR from the dealer page (Seat 1..4), type a name, **Sit down**. A free guest wallet is made on the phone.
-No wallet app and no SOL needed. Chips are CHIP play money; winnings are paid on-chain to that wallet.
+Scan the seat QR from the dealer page (Seat 1..4), connect a Solana wallet set to devnet, buy in with devnet SOL, **Sit down**.
+Winnings are paid on-chain to that wallet.
 No second human? `tools\bot_player.py --seat 2` plays as a calling station.
 
 ## How it plays
@@ -33,16 +33,23 @@ No second human? `tools\bot_player.py --seat 2` plays as a calling station.
 - Cards left over from the last round are ignored until they are picked up.
 - The dealer drawer shows the camera view, the areas editor and an emergency reset.
 
+## Hosted site (Fly.io)
+Anyone can open a short-lived table: they connect a Solana wallet on devnet and buy in with devnet SOL, exactly like the local table. Bots are off unless a table's dealer adds one. A table closes after 15 idle minutes, at most `MAX_ROOMS` exist at once, and one wallet can only sit at one table.
+
+The app runs as one machine on Fly: game server, card reader and chain service in one container, with the chain ledger on the `pokervis_data` volume.
+- Deploy changes: `fly deploy --ha=false` (never more than one machine).
+- Secrets: `powershell -ExecutionPolicy Bypass -File scripts\fly_secrets.ps1`. They are read from `.env` and `chain\service\.keys\server.json`.
+- Keep the house wallet funded: every new wallet's token account and every cash-out is paid in devnet SOL from it. Top it up at faucet.solana.com.
+- Do not run the local table against the same house wallet while the hosted site is live: each keeps its own copy of the ledger file.
+
 ## Tests
 `python -m pytest game vision server` · `cd chain\service && npm test` · `python tools\e2e_full.py` (services running)
 Experiment scripts (model bake-off, gallery) live in `tools/experiments/`.
 To pick up teammate UI updates: copy their `pixel.js` and `style.css` into `web/vendor/`.
 
 ## Wallet, chips and history (Solana devnet + Postgres)
-- **Login = wallet.** Scanning a seat QR signs a one-time challenge with the phone's Solana wallet (made automatically, no app, no SOL).
-  The wallet key lives in the browser: `MY WALLET & STATS` -> *Copy wallet key* to play from another phone, *Restore* to load it.
-- **Chips are CHIP (devnet play money).** First visit (or busted) = free 1000 CHIP grant. After that the on-chain bankroll IS your stack:
-  win 300, **LOG OUT**, scan again later -> you sit down with 1300. Refill is only offered at 0 chips.
+- **Login = wallet.** Scanning a seat QR signs a one-time challenge with the player's Solana wallet (Phantom, Solflare, Backpack, or an imported devnet key).
+- **Chips are CHIP (devnet play money), bought with devnet SOL.** The on-chain bankroll IS your stack: win 300, **LOG OUT**, scan again later -> you sit down with 1300.
 - **Payout is instant on screen**, the Solana transaction confirms in the background (about 1 s) and the Explorer link appears under the status bar.
 - **History:** every grant and hand is written to Postgres (Tiger Cloud, `DATABASE_URL` in `.env`; tables are created automatically).
   `MY WALLET & STATS` shows the chip balance after every hand (x = hands, y = CHIP), win rate, net, and links to each payout transaction.

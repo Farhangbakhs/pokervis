@@ -26,6 +26,15 @@ DEFAULT_AREAS: dict[str, list[float]] = {
     "S4": [0.26, 0.24, 0.72, 0.33],
 }
 
+# Hosted tables: a first-time visitor has not drawn anything, so the board gets most of the picture and seats take the edges.
+HOSTED_AREAS: dict[str, list[float]] = {
+    "BOARD": [0.20, 0.24, 0.80, 0.76],
+    "S1": [0.10, 0.78, 0.90, 0.98],
+    "S2": [0.82, 0.24, 0.99, 0.76],
+    "S3": [0.10, 0.02, 0.90, 0.22],
+    "S4": [0.01, 0.24, 0.18, 0.76],
+}
+
 
 def validate(areas: dict) -> dict[str, list[float]]:
     """Raise ValueError unless every entry is a known name with 0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1."""

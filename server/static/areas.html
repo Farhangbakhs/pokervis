@@ -3,49 +3,50 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>AutoPoker Table Areas</title>
-<style>
-  :root { --bg:#0b1511; --card:#14241c; --ink:#eaf2ec; --dim:#8fa597; --ok:#3ddc84; --bad:#ff6b6b; --line:#27402f; }
-  @media (prefers-color-scheme: light) { :root { --bg:#eef3ef; --card:#fff; --ink:#14221a; --dim:#586c5f; --line:#cfdcd2; } }
-  * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 system-ui,sans-serif; padding:12px; }
-  h1 { font-size:1rem; margin:0 0 4px; } p { margin:4px 0 10px; color:var(--dim); }
-  .tabs { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
-  button { font:inherit; font-weight:600; padding:10px 12px; border:2px solid transparent; border-radius:10px; background:#2c4a39; color:#fff; }
-  button.sel { border-color:#fff; } button.go { background:#1f7a4a; } button.gray { background:#4a5a52; }
-  canvas { width:100%; display:block; border-radius:10px; background:#000; touch-action:none; }
-  .msg { min-height:1.4em; margin-top:8px; } .ok { color:var(--ok); } .bad { color:var(--bad); }
-  #login { max-width:320px; margin:18vh auto; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
-  input { font:inherit; padding:10px; border-radius:8px; border:1px solid var(--line); background:transparent; color:var(--ink); width:100%; }
-</style>
+<title>PokerVis Table Areas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/ui/vendor/style.css">
+<link rel="stylesheet" href="/ui/live.css">
 </head>
 <body>
-<div id="login"><h1>Dealer PIN</h1><input id="pin" inputmode="numeric" placeholder="PIN"><button class="go" id="go" style="margin-top:8px;width:100%">Continue</button><p class="bad" id="lerr"></p></div>
-
-<div id="app" hidden>
-  <h1>Table areas</h1>
-  <p>Pick an area, then <b>drag on the picture</b> to draw it. Make each one big: the Board area should cover every board card, each Seat area both of that player's cards.</p>
+<header><h1>POKER<span>VIS</span></h1></header>
+<main class="page">
+<section id="login" class="panel">
+  <h2>DEALER PIN</h2>
+  <input id="pin" class="field" inputmode="numeric" placeholder="PIN"><button class="go wide" id="go" type="button">CONTINUE</button>
+  <p class="error" id="lerr"></p>
+</section>
+<section id="app" class="panel" hidden>
+  <h2>TABLE AREAS</h2>
+  <p class="hint">Pick an area, then drag on the picture to draw it. Make each one big: the board area should cover every board card, each seat area both of that player's cards.</p>
   <div class="tabs" id="tabs"></div>
   <canvas id="c"></canvas>
-  <div class="tabs" style="margin-top:8px">
-    <button class="go" id="save">Save</button><button class="gray" id="clear">Clear this area</button><button class="gray" id="reset">Reset all</button>
+  <div class="tabs">
+    <button class="go" id="save" type="button">SAVE</button><button id="clear" type="button">CLEAR THIS AREA</button><button id="reset" type="button">RESET ALL</button>
   </div>
-  <div class="msg" id="msg"></div>
-</div>
+  <div class="hint" id="msg"></div>
+</section>
+</main>
 
 <script>
 const $ = id => document.getElementById(id);
 const COLORS = { BOARD:"#ffb020", S1:"#3ddc84", S2:"#4aa8ff", S3:"#ff6bd6", S4:"#b08cff" };
 const LABEL = { BOARD:"Board", S1:"Seat 1", S2:"Seat 2", S3:"Seat 3", S4:"Seat 4" };
-let token = sessionStorage.getItem("dealer_token"), areas = {}, sel = "BOARD", img = null, drag = null, names = [];
+const ROOM = new URLSearchParams(location.search).get("room") || "";
+const stored = k => { try { return localStorage.getItem(k); } catch { return null; } };
+let token = ROOM ? stored("pokervis.dealer." + ROOM) : (sessionStorage.getItem("dealer_token") || stored("pokervis.dealer")), areas = {}, sel = "BOARD", img = null, drag = null, names = [];
+if (ROOM && !token) { $("pin").hidden = true; $("go").hidden = true; $("lerr").textContent = "Open this page from the browser that opened the table."; }
 const api = async (p, body) => { const r = await fetch(p, { method: body ? "POST" : "GET", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: body ? JSON.stringify(body) : undefined });
   const j = await r.json().catch(() => ({})); if (!r.ok) throw new Error(j.detail || r.statusText); return j; };
-const say = (t, cls) => { $("msg").textContent = t; $("msg").className = "msg " + (cls || ""); };
+const say = (t, cls) => { $("msg").textContent = t; $("msg").className = "hint " + (cls || ""); };
 
 $("go").onclick = async () => { try { const r = await fetch("/api/dealer/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pin: $("pin").value }) });
   const j = await r.json(); if (!r.ok) throw new Error(j.detail); token = j.token; sessionStorage.setItem("dealer_token", token); init(); } catch (e) { $("lerr").textContent = e.message; } };
 
-function tabs() { $("tabs").innerHTML = ""; for (const n of names) { const b = document.createElement("button"); b.textContent = LABEL[n] + (areas[n] ? "" : " (not set)");
-  b.style.background = COLORS[n]; b.style.color = "#111"; b.className = n === sel ? "sel" : ""; b.onclick = () => { sel = n; tabs(); draw(); }; $("tabs").appendChild(b); } }
+function tabs() { $("tabs").innerHTML = ""; for (const n of names) { const b = document.createElement("button"); b.type = "button"; b.textContent = LABEL[n].toUpperCase() + (areas[n] ? "" : " (NOT SET)");
+  b.style.background = COLORS[n]; b.className = n === sel ? "sel" : ""; b.onclick = () => { sel = n; tabs(); draw(); }; $("tabs").appendChild(b); } }
 
 const cv = $("c"), ctx = cv.getContext("2d");
 function draw() {
@@ -69,7 +70,7 @@ $("clear").onclick = () => { delete areas[sel]; tabs(); draw(); say("Cleared. Pr
 $("reset").onclick = async () => { if (confirm("Reset all areas to the defaults?")) { areas = {}; const j = await api("/api/vision/areas"); areas = j.areas; tabs(); draw(); say("Defaults loaded. Press Save to keep them."); } };
 
 async function init() { $("login").hidden = true; $("app").hidden = false;
-  try { const j = await api("/api/vision/areas"); areas = j.areas; names = j.names; } catch (e) { sessionStorage.removeItem("dealer_token"); location.reload(); return; }
+  try { const j = await api("/api/vision/areas"); areas = j.areas; names = j.names; } catch (e) { if (ROOM) { document.body.textContent = "This table has closed."; return; } sessionStorage.removeItem("dealer_token"); token = null; $("login").hidden = false; $("app").hidden = true; $("lerr").textContent = "Sign in again."; return; }
   tabs(); await frame(); setInterval(() => { if (!drag) frame(); }, 1500); }
 if (token) init();
 </script>

@@ -14,6 +14,7 @@ const cfg: Config = {
   stateDir: process.env.CHAIN_STATE_DIR ?? ".state",
   maxBuyin: Number(process.env.MAX_BUYIN ?? 5000),
   lamportsPerChip: Number(process.env.LAMPORTS_PER_CHIP ?? 10_000),
+  clearOpenOnBoot: process.env.CLEAR_OPEN_HANDS_ON_BOOT === "1",
 };
 const chain = new Chain(cfg);
 
@@ -45,7 +46,8 @@ app.post("/verify_buyin", async (req) => { const b = req.body as Body; return ch
 app.post("/cashout_sol", async (req) => { const b = req.body as Body; return chain.cashoutSol(b.pubkey, b.amount); });
 app.get("/balance/:pubkey", async (req) => ({ balance: await chain.balanceOfWallet((req.params as { pubkey: string }).pubkey) }));
 app.post("/fund", async (req) => { const b = req.body as Body; return chain.fund(b.pubkey, b.lamports); });
-app.post("/begin_hand", async (req) => chain.beginHand((req.body as Body).hand_id));
+app.post("/begin_hand", async (req) => { const b = req.body as Body; return chain.beginHand(b.hand_id, b.players); });
+app.post("/bot_bankroll", async (req) => { const b = req.body as Body; return chain.botBankroll(b.pubkey, b.chips); });
 app.post("/abort_hand", async (req) => chain.abortHand((req.body as Body).hand_id));
 app.post("/settle", async (req) => {
   const b = req.body as Body;

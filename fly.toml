@@ -1,0 +1,43 @@
+# One machine only: tables are held in memory and the chain ledger is on one volume. Always deploy with --ha=false.
+app = "pokervis-live"
+primary_region = "ord"
+
+[env]
+  HOSTED = "1"
+  MAX_ROOMS = "2"
+  PORT = "8000"
+  PUBLIC_URL = "https://pokervis-live.fly.dev"
+  CLIENT_IP_HEADER = "fly-client-ip"
+  TORCH_THREADS = "2"             # keep equal to cpus below
+  SOLANA_RPC = "https://api.devnet.solana.com"
+  BUY_IN = "1000"
+  MAX_BUYIN = "5000"
+  LAMPORTS_PER_CHIP = "1000"      # must match the rate the existing CHIP mint was sold at
+
+[mounts]
+  source = "pokervis_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "stop"     # stops when nobody is connected; wakes on the next visit
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 250
+    hard_limit = 300
+
+  [[http_service.checks]]
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "90s"
+    method = "GET"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory = "4gb"

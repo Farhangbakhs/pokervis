@@ -6,18 +6,21 @@ FastAPI layer stays thin and the whole flow is testable without HTTP, camera, or
 from __future__ import annotations
 
 import json
+import random
 import re
 import secrets
 import threading
 import time
 from pathlib import Path
 
-from game.engine import EngineError, Player, PokerEngine
+from game.engine import ALL_CARDS, EngineError, Player, PokerEngine
 from server.chain_client import Chain, ChainError
 from server.db import NullDb
 from vision.zones import ZoneReading, is_board, seat_hole_cards, seat_of_zone
 
 MAX_SEATS = 4
+BOT_NAMES = {1: "Ada", 2: "Turing", 3: "Hopper", 4: "Lovelace"}
+BOT_DELAY = 1.2                                     # seconds a bot "thinks", so the table is readable
 
 
 def _distinct(items: list[str]) -> list[str]:
@@ -34,8 +37,18 @@ class TableError(Exception):
 
 class Table:
     def __init__(self, chain: Chain, blinds: tuple[int, int] = (5, 10), buy_in: int = 1000,
-                 auto_confirm: bool = True, min_conf: float = 0.35, state_path: Path | None = None, db=None, settle_async: bool = False):
+                 auto_confirm: bool = True, min_conf: float = 0.35, state_path: Path | None = None, db=None, settle_async: bool = False,
+                 hand_prefix: str = ""):
         self.chain = chain
+        self.hand_prefix = hand_prefix              # hosted tables: "<room>." so their hands are told apart on chain
+        self._refilling: set[int] = set()           # bots being topped up on chain
+        self.bots: set[int] = set()                 # seats played by the server; their cards are dealt virtually at showdown
+        self._bot_cards: tuple[str | None, dict[int, list[str]]] = (None, {})
+        self._bot_turn: tuple[int | None, float] = (None, 0.0)
+        self._cashing: set[int] = set()             # seats whose SOL cash-out is on its way
+        self._sol_retry = 0.0                       # next time to ask an unreachable chain service for its info
+        self._vision_sig = None                     # what the last vision message changed for the screens
+        self.board_pending = 0                      # cards the camera has spotted but not confirmed yet
         self.db = db or NullDb()
         self.settle_async = settle_async            # real server: the payout confirms in the background, the table never freezes
         self._settling = False
@@ -133,34 +146,124 @@ class Table:
         if seat not in self.seat_codes or not secrets.compare_digest(self.seat_codes[seat], code or ""):
             raise TableError("Wrong seat code. Scan the QR printed at your seat.")
 
+    def _check_can_join(self, seat: int, pubkey: str) -> dict | None:
+        """Raise if this wallet cannot sit here. Returns the seat info when it is simply a player signing back in."""
+        if not 1 <= seat <= MAX_SEATS:
+            raise TableError("Invalid seat")
+        if seat in self.engine.players and self.engine.players[seat].pubkey == pubkey:
+            return {"seat": seat, "stack": self.engine.players[seat].stack}     # phone reload / lost token: always allowed, even mid-hand
+        if self.engine.in_hand or self.engine.result is not None:
+            raise TableError("Hand in progress, join between hands")
+        if seat in self.engine.players:
+            raise TableError(f"Seat {seat} is taken")
+        if self._seat_of_pubkey(pubkey) is not None:
+            raise TableError("This wallet already has a seat")
+        return None
+
     def join(self, seat: int, name: str, pubkey: str) -> dict:
         with self.lock:
-            if not 1 <= seat <= MAX_SEATS:
-                raise TableError("Invalid seat")
-            if seat in self.engine.players and self.engine.players[seat].pubkey == pubkey:
-                # same person re-signing in (phone reload / lost token): always allowed, even mid-hand
+            back = self._check_can_join(seat, pubkey)
+            if back:
                 self.db.upsert_player(pubkey, self.engine.players[seat].name)
-                return {"seat": seat, "stack": self.engine.players[seat].stack}
-            if self.engine.in_hand or self.engine.result is not None:
-                raise TableError("Hand in progress, join between hands")
-            if seat in self.engine.players:
-                raise TableError(f"Seat {seat} is taken")
-            if self._seat_of_pubkey(pubkey) is not None:
-                raise TableError("This wallet already has a seat")
+                return back
+        # The wallet's on-chain bankroll IS the stack: asked outside the lock so a slow chain never freezes the table.
+        try:
+            stack = int(self.chain.balance(pubkey))
+        except ChainError as e:
+            raise TableError(str(e)) from e
+        if stack <= 0:
+            raise TableError("Buy in first: pay devnet SOL from your wallet to get chips")
+        with self.lock:
+            back = self._check_can_join(seat, pubkey)               # things may have changed while we asked
+            if back:
+                return back
             name = (name or "").strip()[:20] or f"Player {seat}"
             try:
-                # The wallet's on-chain bankroll IS the stack. Chips only ever come from SOL this wallet paid the table
-                # (verified on chain), or from winning hands: there is no free grant of any kind.
-                stack = int(self.chain.balance(pubkey))
-                if stack <= 0:
-                    raise TableError("Buy in first: pay devnet SOL from your wallet to get chips")
                 self.engine.add_player(seat, name, pubkey, stack)
-                self.db.upsert_player(pubkey, name)
-            except (ChainError, EngineError) as e:
+            except EngineError as e:
                 raise TableError(str(e)) from e
+            self.db.upsert_player(pubkey, name)
             self._last_join = time.time()
             self._bump()
-            return {"seat": seat, "stack": self.engine.players[seat].stack}
+            return {"seat": seat, "stack": stack}
+
+    # ---------- optional bots (only when a table's dealer asks for one) ----------
+    def add_bot(self, pubkey: str, seat: int | None = None) -> dict:
+        def free_seat() -> int:
+            if self.engine.in_hand or self.engine.result is not None:
+                raise TableError("Add bots between hands")
+            free = [s for s in range(1, MAX_SEATS + 1) if s not in self.engine.players]
+            if not free:
+                raise TableError("The table is full")
+            return seat if seat in free else free[-1]
+        with self.lock:
+            free_seat()
+        try:
+            stack = int(self.chain.bot_bankroll(pubkey, self.buy_in)["balance"])   # on chain, so never under the lock
+        except ChainError as e:
+            raise TableError(str(e)) from e
+        with self.lock:
+            s = free_seat()
+            self.engine.add_player(s, BOT_NAMES[s], pubkey, stack)
+            self.bots.add(s)
+            self._last_join = time.time()
+            self._bump()
+            return {"seat": s}
+
+    def _refill_bot(self, seat: int, pubkey: str) -> None:
+        try:
+            balance = int(self.chain.bot_bankroll(pubkey, self.buy_in)["balance"])
+            with self.lock:
+                p = self.engine.players.get(seat)
+                if p is not None and p.pubkey == pubkey and not self.engine.in_hand and self.engine.result is None:
+                    p.stack = balance
+                    self._bump()
+        except Exception as e:  # noqa: BLE001 - a bot that cannot refill just sits out
+            print("bot refill failed:", e)
+        finally:
+            self._refilling.discard(seat)
+
+    def _bots_play(self, now: float) -> None:
+        e = self.engine
+        for s in self.bots:                                         # a busted bot is topped up between rounds
+            p = e.players.get(s)
+            if p is not None and p.stack <= 0 and not e.in_hand and e.result is None and s not in self._refilling:
+                self._refilling.add(s)
+                threading.Thread(target=self._refill_bot, args=(s, p.pubkey), daemon=True, name="bot-refill").start()
+        s = e.to_act
+        if s is None or s not in self.bots or self.phase != "betting":
+            self._bot_turn = (None, 0.0)
+            return
+        if self._bot_turn[0] != s:
+            self._bot_turn = (s, now)
+        if now - self._bot_turn[1] < BOT_DELAY:
+            return
+        self._bot_turn = (None, 0.0)
+        call = e.to_call(s)
+        limits = e.raise_limits()
+        humans_live = [x for x in e.live_seats() if x not in self.bots]
+        roll = random.random()
+        if not humans_live and len(e.live_seats()) > 1:             # nobody is watching a bot-only pot: end it
+            kind, amount = ("fold" if call else "check"), None
+        elif call and roll < 0.18:
+            kind, amount = "fold", None
+        elif limits and roll > 0.9:
+            kind, amount = "raise", min(limits[1], limits[0] + random.choice([0, 10, 20]))
+        else:
+            kind, amount = ("call" if call else "check"), None
+        self.act(s, kind, amount)
+
+    def _bot_hole_cards(self, known: set[str]) -> dict[int, list[str]]:
+        """Virtual cards for the bots still in the hand, from whatever the camera has not seen. Decided once per hand."""
+        seats = [s for s in self.engine.live_seats() if s in self.bots]
+        key, cards = self._bot_cards
+        used = {c for cs in cards.values() for c in cs}
+        if key != self.hand_key or set(cards) != set(seats) or used & known:
+            rng = secrets.SystemRandom()
+            pool = rng.sample(sorted(ALL_CARDS - known), 2 * len(seats))
+            cards = {s: pool[2 * i:2 * i + 2] for i, s in enumerate(seats)}
+            self._bot_cards = (self.hand_key, cards)
+        return cards
 
     def cash_out(self, seat: int) -> dict:
         """Log out: stand up between hands. The chips stay in this wallet's on-chain bankroll, so signing back in
@@ -190,11 +293,11 @@ class Table:
     # ---------- real devnet SOL: buy in / cash out ----------
     def sol_info(self) -> dict | None:
         """House address + chip price (cached). None while the chain service is unreachable."""
-        if self._sol is None:
+        if self._sol is None and time.time() >= self._sol_retry:
             try:
                 self._sol = self.chain.info()
             except Exception:  # noqa: BLE001
-                return None
+                self._sol_retry = time.time() + 10                 # do not make every state update wait on a dead service
         return self._sol
 
     def prepare_buyin(self, pubkey: str, chips: int) -> dict:
@@ -223,11 +326,20 @@ class Table:
         return res
 
     def sync_stack(self, seat: int) -> dict:
-        with self.lock:
+        def check():
             p = self.engine.players.get(seat)
             if p is None or self.engine.in_hand or self.engine.result is not None:
                 raise TableError("You can add chips between rounds")
-            p.stack = int(self.chain.balance(p.pubkey))
+            return p
+        with self.lock:
+            pubkey = check().pubkey
+        try:
+            balance = int(self.chain.balance(pubkey))               # outside the lock: this is a network call
+        except ChainError as e:
+            raise TableError(str(e)) from e
+        with self.lock:
+            p = check()
+            p.stack = balance
             self._bump()
             return {"stack": p.stack}
 
@@ -241,17 +353,28 @@ class Table:
                 raise TableError("Cash out between hands")
             if p.stack <= 0:
                 raise TableError("You have no chips to cash out")
+            if seat in self._cashing:
+                raise TableError("Your cash-out is already on its way")
+            self._cashing.add(seat)                                 # blocks a new hand or a kick while the transaction confirms
+            pubkey, stack, name = p.pubkey, p.stack, p.name
+        try:
             try:
-                res = self.chain.cashout_sol(p.pubkey, p.stack)
-                self.engine.remove_player(seat)
-            except (ChainError, EngineError) as e:
+                res = self.chain.cashout_sol(pubkey, stack)         # can take many seconds: the table keeps running meanwhile
+            except ChainError as e:
                 raise TableError(str(e)) from e
-            self.db.record_entry(p.pubkey, p.name, "cashout", -int(res["amount"]), int(res["balance"]),
-                                 res.get("signature", ""), res.get("explorer_url", ""))
-            self._feed("cash-out", p.name, int(res["amount"]), res)
-            self._last_join = time.time()
-            self._bump()
-            return res
+            with self.lock:
+                try:
+                    self.engine.remove_player(seat)
+                except EngineError as e:
+                    raise TableError(str(e)) from e
+                self.db.record_entry(pubkey, name, "cashout", -int(res["amount"]), int(res["balance"]),
+                                     res.get("signature", ""), res.get("explorer_url", ""))
+                self._feed("cash-out", name, int(res["amount"]), res)
+                self._last_join = time.time()
+                self._bump()
+                return res
+        finally:
+            self._cashing.discard(seat)
 
     def kick(self, seat: int) -> dict:
         """Dealer removes a player. A hand in progress is cancelled first (stacks only move when a hand settles,
@@ -262,6 +385,8 @@ class Table:
                 raise TableError("Empty seat")
             if self.settle_error or self._settling:
                 raise TableError("Settlement not confirmed yet: wait or retry settlement first")
+            if seat in self._cashing:
+                raise TableError("That player's cash-out is on its way")
             name = p.name
             if self.engine.in_hand:
                 self.abort_hand()
@@ -271,6 +396,7 @@ class Table:
             except EngineError as e:
                 raise TableError(str(e)) from e
             self.seat_codes[seat] = secrets.token_urlsafe(6)         # the old QR / link no longer sits down
+            self.bots.discard(seat)
             self.last_action.pop(seat, None)
             self._last_join = time.time()
             self._bump()
@@ -296,20 +422,23 @@ class Table:
         with self.lock:
             if self.engine.result is not None:
                 raise TableError("Press Next hand first")
+            if self._cashing:
+                raise TableError("A cash-out is on its way: start the round in a moment")
             self.overrides.clear()
             prev_key, prev_id = self.hand_key, self.engine.hand_id
             try:
                 hid = self.engine.start_hand()
-                self.hand_key = f"{self.session}-{hid}"
+                self.hand_key = f"{self.hand_prefix}{self.session}-{hid}"
+                players = [self.engine.players[s].pubkey for s in self.engine._order]
                 try:
-                    self.chain.begin_hand(self.hand_key)
+                    self.chain.begin_hand(self.hand_key, players)
                 except ChainError as e:
                     # a hand left open by an earlier session blocks every new one: close it, then retry once
                     m = re.search(r"hand (\S+) still open", str(e))
                     if not m or m.group(1) == self.hand_key:
                         raise
                     self.chain.abort_hand(m.group(1))
-                    self.chain.begin_hand(self.hand_key)
+                    self.chain.begin_hand(self.hand_key, players)
             except (EngineError, ChainError) as e:
                 self.engine.abort()
                 self.engine.hand_id, self.hand_key = prev_id, prev_key    # a failed start must not burn a hand id
@@ -390,6 +519,8 @@ class Table:
                     self._board_order.append(c)                          # new card: appended, existing cards keep their place
             self._board_order = [c for c in self._board_order if c in self._board_now or now - self._board_seen_at.get(c, 0) < self.BOARD_HOLD]
             five_out = len(self._board_view()) >= 5
+            shown = set(self._board_view())
+            self.board_pending = len({v["code"] for _, v in board if not v.get("stable") and v["code"] not in shown and v["code"] not in self._stale})
             self.readings = {
                 z: ZoneReading(v["code"], float(v["conf"]), bool(v.get("stable")))
                 for z, v in zones.items()
@@ -397,7 +528,20 @@ class Table:
             }
             self._auto()
             self.tick()
-            self._bump()
+            sig = (tuple(self._board_view()), self.board_pending, tuple(sorted((z, r.code, r.stable) for z, r in self.readings.items())),
+                   tuple(self.vision_warnings), tuple(self.prompts), self.phase, tuple(self.engine.board))
+            if sig != self._vision_sig:                          # an unchanged picture is not news: the screens are not redrawn
+                self._vision_sig = sig
+                self._bump()
+
+    def seats_to_read(self) -> list[int]:
+        """Seat areas the reader may look at right now: only once five new cards are out, only players still in, never bots.
+        Nobody's private look at their own cards is ever read."""
+        with self.lock:
+            e = self.engine
+            if not e.in_hand or len(self._fresh_codes()) < 5:
+                return []
+            return [s for s in e.live_seats() if s not in self.bots]
 
     def tick(self) -> None:
         """About once a second and on every vision message. Never starts a round (the dealer does that):
@@ -410,6 +554,8 @@ class Table:
                 self._bump()
             if e.result is not None and self.last_settlement is not None and not self.settle_error and now - self._settled_at >= 8:
                 self.next_hand()                                   # result stays on screen for 8 s, then: waiting for the dealer
+            if self.bots:
+                self._bots_play(now)
 
     # ---------- starting a round (the dealer decides when) ----------
     def camera_live(self) -> bool:
@@ -472,7 +618,12 @@ class Table:
         if len(board) >= 5:
             # five NEW cards are out: read every remaining player's two cards and pay out
             out["board5"] = board[:5]
-            out["reveal"] = seat_hole_cards(r, e.live_seats(), self.min_conf)
+            humans = [s for s in e.live_seats() if s not in self.bots]
+            reveal = seat_hole_cards(r, humans, self.min_conf)
+            if reveal is not None and self.bots:
+                known = set(board[:5]) | {c for cs in reveal.values() for c in cs}
+                reveal = {**reveal, **self._bot_hole_cards(known)}
+            out["reveal"] = reveal
         elif e.board_needed:
             # fewer than five: feed the cards to the game one betting round at a time
             new = [c for c in board if c not in e.board]
@@ -644,7 +795,7 @@ class Table:
                     "detail": f"Burn a card, then put {n} card{'s' if n != 1 else ''} face up in the board area. Hands out of view."}
         if ph == "showdown":
             placed = self._placed_cards()
-            waiting = [s for s in e.live_seats() if len(placed.get(s, [])) < 2]
+            waiting = [s for s in e.live_seats() if len(placed.get(s, [])) < 2 and s not in self.bots]
             if waiting:
                 return {"code": "showdown", "headline": "5 CARDS OUT: PLACE YOUR CARDS",
                         "detail": "Waiting for " + ", ".join(name(s) for s in waiting) + ". Put both cards face up in your area."}
@@ -698,6 +849,7 @@ class Table:
                 shown = self._placed_cards()
             return {
                 "version": self.version, "phase": self.phase, "mode": self.chain.mode, "sol": self.sol_info(), "feed": list(self.feed),
+                "board_pending": self.board_pending, "bots": sorted(self.bots),
                 "status": self._status(), "roles": roles, "showdown_cards": shown, "can_start": self.can_start(),
                 "board_camera": self._board_view(),
                 "manual_mode": self.manual_mode, "blinds": list(e.blinds), "buy_in": self.buy_in,

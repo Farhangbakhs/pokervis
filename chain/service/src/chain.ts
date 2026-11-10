@@ -17,14 +17,16 @@ export interface Config {
   stateDir: string;
   maxBuyin: number;
   lamportsPerChip: number;                 // 1 CHIP = this many lamports (default 10_000: 1000 CHIP = 0.01 SOL)
+  clearOpenOnBoot?: boolean;               // hosted: tables live in memory and restart with this service, so no hand survives a boot
 }
 
 interface Settled { signature: string; explorer_url: string; transfers: Transfer[]; at: string }
+interface OpenHand { players: string[]; at: string }
 interface State {
   mint: string | null;
   seats: Record<string, string>;          // player wallet pubkey -> CHIP token account (owned by the server)
   settled: Record<string, Settled>;       // hand_id -> result (idempotency / replay protection)
-  begun: string | null;                   // hand currently open for settlement
+  open: Record<string, OpenHand>;         // hands in progress, one per table
   bank: string | null;                    // CHIP token account that receives chips cashed out for SOL
   deposits: Record<string, { chips: number; mint_sig: string }>;   // SOL buy-in signature -> credited (idempotency)
 }
@@ -45,6 +47,9 @@ export function parsePubkey(s: unknown): PublicKey {
   return new PublicKey(s);                 // throws on bad base58
 }
 
+/** Hosted hand ids are "<room>.<session>-<n>"; the local table's have no room. */
+export const tableOf = (handId: string): string => (handId.includes(".") ? handId.slice(0, handId.indexOf(".")) : "");
+
 export const explorer = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
 
 export class Chain {
@@ -60,10 +65,14 @@ export class Chain {
     this.payer = loadKeypair(cfg.keypairPath);
     fs.mkdirSync(cfg.stateDir, { recursive: true });
     this.statePath = path.join(cfg.stateDir, "state.json");
-    const fresh: State = { mint: null, seats: {}, settled: {}, begun: null, bank: null, deposits: {} };
-    this.state = fs.existsSync(this.statePath)
-      ? { ...fresh, ...(JSON.parse(fs.readFileSync(this.statePath, "utf8")) as Partial<State>) }
-      : fresh;
+    const fresh: State = { mint: null, seats: {}, settled: {}, open: {}, bank: null, deposits: {} };
+    const saved = fs.existsSync(this.statePath)
+      ? (JSON.parse(fs.readFileSync(this.statePath, "utf8")) as Partial<State> & { begun?: string | null })
+      : {};
+    const { begun, ...rest } = saved;
+    this.state = { ...fresh, ...rest };
+    if (begun) this.state.open[begun] = { players: [], at: new Date().toISOString() };   // state files from before tables
+    if (cfg.clearOpenOnBoot) this.state.open = {};
   }
 
   /** Serialise all mutating operations (one settlement at a time). */
@@ -204,7 +213,8 @@ export class Chain {
   cashoutSol(pubkeyStr: unknown, amount?: unknown) {
     return this.serial(async () => {
       const pk = parsePubkey(pubkeyStr);
-      if (this.state.begun) throw new Error("hand in progress");
+      const key = pk.toBase58();
+      if (Object.values(this.state.open).some((h) => h.players.length === 0 || h.players.includes(key))) throw new Error("hand in progress");
       const acct = await this.seatAccount(pk);
       const bal = await this.balanceOf(acct);
       const amt = amount === undefined || amount === null ? bal : amount;
@@ -226,12 +236,30 @@ export class Chain {
     });
   }
 
-  beginHand(handId: unknown) {
+  /**
+   * A house-run bot's bankroll: topped up to `chips`. Bots have no wallet to pay from, so the CHIP is minted by the house.
+   * Only the game server can call this, and only for the fixed set of bot addresses it derives.
+   */
+  botBankroll(pubkeyStr: unknown, chipsIn: unknown) {
+    return this.serial(async () => {
+      const pk = parsePubkey(pubkeyStr);
+      if (!Number.isSafeInteger(chipsIn) || (chipsIn as number) < 1 || (chipsIn as number) > this.cfg.maxBuyin)
+        throw new Error(`chips must be an integer 1..${this.cfg.maxBuyin}`);
+      const acct = await this.seatAccount(pk);
+      const balance = await this.balanceOf(acct);
+      if (balance >= (chipsIn as number)) return { balance };
+      await mintTo(this.connection, this.payer, this.mint, acct, this.payer, (chipsIn as number) - balance);
+      return { balance: chipsIn as number };
+    });
+  }
+
+  beginHand(handId: unknown, players?: unknown) {
     return this.serial(async () => {
       if (typeof handId !== "string" || !handId || handId.length > 64) throw new Error("bad hand_id");
       if (this.state.settled[handId]) throw new Error("hand_id already settled");
-      if (this.state.begun && this.state.begun !== handId) throw new Error(`hand ${this.state.begun} still open`);
-      this.state.begun = handId;
+      const other = Object.keys(this.state.open).find((h) => h !== handId && tableOf(h) === tableOf(handId));
+      if (other) throw new Error(`hand ${other} still open`);
+      this.state.open[handId] = { players: Array.isArray(players) ? players.map(String) : [], at: new Date().toISOString() };
       this.save();
       return { ok: true, hand_id: handId };
     });
@@ -239,8 +267,8 @@ export class Chain {
 
   abortHand(handId: unknown) {
     return this.serial(async () => {
-      if (this.state.begun !== handId) throw new Error("that hand is not open");
-      this.state.begun = null;
+      if (typeof handId !== "string" || !this.state.open[handId]) throw new Error("that hand is not open");
+      delete this.state.open[handId];
       this.save();
       return { ok: true };
     });
@@ -255,7 +283,7 @@ export class Chain {
       if (typeof handId !== "string") throw new Error("bad hand_id");
       const done = this.state.settled[handId];
       if (done) return { ...done, replay: true };
-      if (this.state.begun !== handId) throw new Error("hand not begun");
+      if (!this.state.open[handId]) throw new Error("hand not begun");
       if (typeof showdownHash !== "string" || !/^[0-9a-f]{64}$/.test(showdownHash)) throw new Error("bad showdown_hash");
       if (typeof deltas !== "object" || deltas === null) throw new Error("bad deltas");
 
@@ -283,7 +311,7 @@ export class Chain {
 
       const rec: Settled = { signature, explorer_url: explorer(signature), transfers, at: new Date().toISOString() };
       this.state.settled[handId] = rec;
-      this.state.begun = null;
+      delete this.state.open[handId];
       this.save();
       return rec;
     });
